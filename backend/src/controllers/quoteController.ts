@@ -6,7 +6,7 @@ import { MovingRequest } from '../models/MovingRequest.js';
 
 export const submitQuote = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { requestId } = req.params;
+    const requestId = req.params.requestId as string;
     const { totalAmountMinorUnits, currency = 'INR', itemizedServices, inclusions, exclusions, assumptions, validUntil } = req.body;
 
     const movingRequest = await MovingRequest.findById(requestId);
@@ -44,7 +44,7 @@ export const submitQuote = async (req: AuthenticatedRequest, res: Response): Pro
 
 export const getQuotesForRequest = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { requestId } = req.params;
+    const requestId = req.params.requestId as string;
     const quotes = await Quote.find({ requestId, status: 'SUBMITTED' }).populate('vendorId', 'businessName contactPhone');
     res.status(200).json({ quotes });
   } catch (error) {
