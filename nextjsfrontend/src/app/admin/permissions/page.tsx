@@ -27,8 +27,8 @@ export default function AdminPermissionsPage() {
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [rolePermissions, setRolePermissions] = useState<Record<string, string[]>>({
     admin: [],
-    vendor: [],
-    worker: [],
+    operations_manager: [],
+    operations_executive: [],
     customer: [],
   });
   const [loading, setLoading] = useState(true);
@@ -38,8 +38,8 @@ export default function AdminPermissionsPage() {
 
   const roles = [
     { id: "admin", label: "Admin", badge: "Supervisory" },
-    { id: "vendor", label: "Vendor", badge: "Fleet" },
-    { id: "worker", label: "Worker", badge: "Field Crew" },
+    { id: "operations_manager", label: "Ops Manager", badge: "Management" },
+    { id: "operations_executive", label: "Ops Executive", badge: "Execution" },
     { id: "customer", label: "Customer", badge: "Client" },
   ];
 
@@ -244,17 +244,17 @@ export default function AdminPermissionsPage() {
                                     disabled={isUpdating}
                                     className={`inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium transition cursor-pointer border ${
                                       isGranted
-                                        ? "bg-blue-50/80/90 text-[#2563EB] border-blue-200 hover:bg-blue-100 font-semibold"
-                                        : "bg-[#EEF2F6] text-[#64748B] border-[#D9E2EC]/70 hover:bg-[#E2E8F0]/50 hover:text-[#1E293B]"
+                                        ? "bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100 font-semibold"
+                                        : "bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 font-semibold"
                                     } ${isUpdating ? "opacity-50 pointer-events-none" : ""}`}
                                     title={`Click to ${isGranted ? "revoke" : "grant"} permission for ${role.label}`}
                                   >
                                     {isUpdating ? (
-                                      <RefreshCw size={10} className="animate-spin text-[#2563EB]" />
+                                      <RefreshCw size={10} className={`animate-spin ${isGranted ? "text-emerald-600" : "text-rose-600"}`} />
                                     ) : isGranted ? (
-                                      <Check size={11} className="text-[#2563EB]" />
+                                      <Check size={11} className="text-emerald-600" />
                                     ) : (
-                                      <X size={11} className="text-[#64748B]" />
+                                      <X size={11} className="text-rose-600" />
                                     )}
                                     <span>{isGranted ? "Allowed" : "Restricted"}</span>
                                   </button>

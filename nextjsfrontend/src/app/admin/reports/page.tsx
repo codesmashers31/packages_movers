@@ -139,60 +139,68 @@ export default function AdminReportsPage() {
         <>
           {/* Executive Summary Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="p-4 bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80">
+            <div className="bg-blue-50 hover:bg-blue-100 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer p-4 rounded-2xl shadow-neu-flat border border-blue-200 group">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span className="font-medium">Gross Move Value</span>
-                <span className="font-mono text-[#2563EB] font-bold">INR</span>
+                <span className="font-semibold uppercase tracking-wider text-[11px] text-blue-800">Gross Move Value</span>
+                <div className="h-8 w-8 rounded-xl bg-white shadow-sm border border-blue-200 flex items-center justify-center text-[#2563EB] group-hover:scale-110 transition-transform">
+                  <span className="font-mono text-[10px] font-bold">INR</span>
+                </div>
               </div>
-              <p className="text-2xl font-semibold text-slate-900 mt-2">
+              <p className="text-2xl font-bold text-blue-900 mt-2 font-mono">
                 ₹{data.bookingsSummary?.totalValueInr.toLocaleString() || "0"}
               </p>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-[11px] text-blue-700 mt-1">
                 Avg ₹{data.bookingsSummary?.averageValueInr.toLocaleString() || "0"} per quote
               </p>
             </div>
 
-            <div className="p-4 bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80">
+            <div className="bg-teal-50 hover:bg-teal-100 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer p-4 rounded-2xl shadow-neu-flat border border-teal-200 group">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span className="font-medium">Move Fulfillment Rate</span>
-                <CheckCircle2 size={15} className="text-[#14B8A6]" />
+                <span className="font-semibold uppercase tracking-wider text-[11px] text-teal-800">Move Fulfillment Rate</span>
+                <div className="h-8 w-8 rounded-xl bg-white shadow-sm border border-teal-200 flex items-center justify-center text-[#14B8A6] group-hover:scale-110 transition-transform">
+                  <CheckCircle2 size={16} />
+                </div>
               </div>
-              <p className="text-2xl font-semibold text-slate-900 mt-2">
+              <p className="text-2xl font-bold text-teal-900 mt-2 font-mono">
                 {data.stats.totalBookings > 0
                   ? Math.round((data.stats.completedBookings / data.stats.totalBookings) * 100)
                   : 100}
                 %
               </p>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-[11px] text-teal-700 mt-1">
                 {data.stats.completedBookings} of {data.stats.totalBookings} fulfilled
               </p>
             </div>
 
-            <div className="p-4 bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80">
+            <div className="bg-orange-50 hover:bg-orange-100 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer p-4 rounded-2xl shadow-neu-flat border border-orange-200 group">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span className="font-medium">Vendor Utilization</span>
-                <Store size={15} className="text-orange-500" />
+                <span className="font-semibold uppercase tracking-wider text-[11px] text-orange-800">Vendor Utilization</span>
+                <div className="h-8 w-8 rounded-xl bg-white shadow-sm border border-orange-200 flex items-center justify-center text-orange-500 group-hover:scale-110 transition-transform">
+                  <Store size={16} />
+                </div>
               </div>
-              <p className="text-2xl font-semibold text-slate-900 mt-2">
+              <p className="text-2xl font-bold text-orange-900 mt-2 font-mono">
                 {data.stats.totalVendors > 0
                   ? Math.round((data.stats.approvedVendors / data.stats.totalVendors) * 100)
                   : 100}
                 %
               </p>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-[11px] text-orange-700 mt-1">
                 {data.stats.approvedVendors} approved / {data.stats.totalVendors} total
               </p>
             </div>
 
-            <div className="p-4 bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80">
+            <div className="bg-amber-50 hover:bg-amber-100 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer p-4 rounded-2xl shadow-neu-flat border border-amber-200 group">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span className="font-medium">Coverage Zones</span>
-                <MapPin size={15} className="text-amber-500" />
+                <span className="font-semibold uppercase tracking-wider text-[11px] text-amber-800">Coverage Zones</span>
+                <div className="h-8 w-8 rounded-xl bg-white shadow-sm border border-amber-200 flex items-center justify-center text-amber-500 group-hover:scale-110 transition-transform">
+                  <MapPin size={16} />
+                </div>
               </div>
-              <p className="text-2xl font-semibold text-slate-900 mt-2">
+              <p className="text-2xl font-bold text-amber-900 mt-2 font-mono">
                 {data.stats.serviceAreasCount || 6}
               </p>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-[11px] text-amber-700 mt-1">
                 Active municipal territories
               </p>
             </div>

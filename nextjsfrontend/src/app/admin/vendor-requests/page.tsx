@@ -268,23 +268,26 @@ export default function AdminVendorRequestsPage() {
 
       {/* Inspect Application Modal */}
       {inspectApp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40">
-          <div className="w-full max-w-lg bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80 overflow-hidden shadow-lg">
-            <div className="px-5 py-3.5 border-b border-[#D9E2EC]/70 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">{inspectApp.businessName}</h3>
-                <p className="text-[11px] text-slate-500">Application Review</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-2xl bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80 overflow-hidden shadow-lg flex flex-col max-h-[90vh]">
+            <div className="px-5 py-3.5 border-b border-[#D9E2EC]/70 flex items-center justify-between bg-[#EEF2F6] shrink-0">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setInspectApp(null)}
+                  className="p-1.5 text-slate-500 hover:text-slate-700 bg-white/50 hover:bg-white rounded-lg shadow-sm border border-[#D9E2EC]/70 transition cursor-pointer"
+                  title="Go Back"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                </button>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">{inspectApp.businessName}</h3>
+                  <p className="text-[11px] text-slate-500">Application Review</p>
+                </div>
               </div>
-              <button
-                onClick={() => setInspectApp(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded transition cursor-pointer"
-              >
-                <X size={16} />
-              </button>
             </div>
 
-            <div className="p-5 space-y-3.5 text-xs">
-              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
+            <div className="p-5 space-y-4 text-xs overflow-y-auto min-h-0">
+              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-200">
                 <div>
                   <span className="text-slate-500 block mb-0.5">Current Status</span>
                   <StatusBadge status={inspectApp.status} />
@@ -305,55 +308,90 @@ export default function AdminVendorRequestsPage() {
                 )}
               </div>
 
-              <div>
-                <span className="text-slate-500 block mb-1">Requested Service Areas</span>
-                <div className="flex flex-wrap gap-1">
-                  {inspectApp.serviceAreas?.map((a, i) => (
-                    <span key={i} className="px-2 py-0.5 bg-[#EEF2F6] rounded text-slate-700">
-                      {a}
-                    </span>
-                  ))}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-slate-500 block mb-1">Requested Service Areas</span>
+                  <div className="flex flex-wrap gap-1">
+                    {inspectApp.serviceAreas?.map((a, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-white border border-[#D9E2EC] shadow-sm rounded text-slate-700 font-medium">
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-slate-500 block mb-1">Offered Moving Services</span>
+                  <div className="flex flex-wrap gap-1">
+                    {inspectApp.servicesOffered?.map((s, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-white border border-[#D9E2EC] shadow-sm rounded capitalize font-medium text-slate-700">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <span className="text-slate-500 block mb-1">Offered Moving Services</span>
-                <div className="flex flex-wrap gap-1">
-                  {inspectApp.servicesOffered?.map((s, i) => (
-                    <span key={i} className="px-2 py-0.5 bg-[#EEF2F6] border border-[#D9E2EC]/70 text-slate-700 rounded capitalize">
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {inspectApp.verificationDetails && Object.keys(inspectApp.verificationDetails).length > 0 && (
-                <div className="p-3 bg-[#EEF2F6] rounded-md border border-[#D9E2EC]/70">
-                  <span className="font-medium text-slate-700 block mb-1">Submitted Verification Documents</span>
-                  <pre className="text-[11px] font-mono text-slate-600 whitespace-pre-wrap">
-                    {JSON.stringify(inspectApp.verificationDetails, null, 2)}
-                  </pre>
+              {inspectApp.verificationDetails && (
+                <div className="pt-2">
+                  <span className="font-semibold text-slate-800 block mb-2 text-sm border-b border-[#D9E2EC]/70 pb-1">Submitted Verification Documents</span>
+                  <div className="space-y-3 mt-3">
+                    {Array.isArray(inspectApp.verificationDetails) ? (
+                      inspectApp.verificationDetails.map((doc, idx) => (
+                        <div key={idx} className="p-3 bg-white rounded-xl shadow-sm border border-[#D9E2EC] flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-slate-900 truncate text-sm">{doc.name || doc.type}</p>
+                            <p className="text-slate-500 mt-0.5 text-[11px] font-mono truncate">{doc.fileName || "Document"}</p>
+                            {doc.notes && <p className="text-slate-600 mt-1.5 italic text-[11px]">&quot;{doc.notes}&quot;</p>}
+                            <div className="flex items-center gap-2 mt-2">
+                              {doc.status && (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${doc.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                  {doc.status}
+                                </span>
+                              )}
+                              {doc.fileSize && <span className="text-slate-400 text-[10px]">{doc.fileSize}</span>}
+                            </div>
+                          </div>
+                          {doc.fileUrl && (
+                            <a 
+                              href={doc.fileUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium rounded-lg transition shrink-0 border border-blue-200 shadow-sm flex items-center gap-1.5"
+                            >
+                              <Eye size={14} />
+                              <span>View</span>
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <pre className="text-[11px] font-mono text-slate-600 bg-white p-3 rounded-xl border border-[#D9E2EC] overflow-x-auto">
+                        {JSON.stringify(inspectApp.verificationDetails, null, 2)}
+                      </pre>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="px-5 py-3 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex items-center justify-between">
+            <div className="px-5 py-3.5 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex items-center justify-between shrink-0">
               <button
                 onClick={() => setInspectApp(null)}
-                className="px-3 py-1.5 border border-[#D9E2EC]/80 text-slate-700 hover:bg-[#EEF2F6] rounded-md transition cursor-pointer text-xs"
+                className="px-4 py-2 bg-white text-slate-700 hover:bg-slate-50 font-medium rounded-lg transition cursor-pointer shadow-sm border border-slate-200"
               >
                 Close
               </button>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => openDecisionModal(inspectApp, "APPROVED")}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-medium transition cursor-pointer"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition cursor-pointer shadow-sm"
                 >
                   Approve Application
                 </button>
                 <button
                   onClick={() => openDecisionModal(inspectApp, "REJECTED")}
-                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-medium transition cursor-pointer"
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-medium transition cursor-pointer shadow-sm"
                 >
                   Reject
                 </button>

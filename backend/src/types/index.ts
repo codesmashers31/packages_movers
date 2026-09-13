@@ -1,4 +1,4 @@
-export type UserRole = 'customer' | 'vendor' | 'worker' | 'admin';
+export type UserRole = 'customer' | 'vendor' | 'worker' | 'admin' | 'operations_manager' | 'operations_executive';
 
 export type RequestStatus = 'DRAFT' | 'OPEN' | 'RESERVED' | 'BOOKED' | 'CLOSED' | 'EXPIRED';
 

@@ -19,7 +19,7 @@ interface UserItem {
   _id: string;
   phone: string;
   displayName: string;
-  role: "customer" | "vendor" | "worker" | "admin";
+  role: "customer" | "vendor" | "worker" | "admin" | "operations_manager" | "operations_executive";
   accountStatus: "active" | "suspended" | "deleted";
   language: string;
   createdAt: string;
@@ -46,7 +46,7 @@ export default function AdminUsersPage() {
   // Form states
   const [formPhone, setFormPhone] = useState("");
   const [formDisplayName, setFormDisplayName] = useState("");
-  const [formRole, setFormRole] = useState<string>("customer");
+  const [formRole, setFormRole] = useState<string>("operations_manager");
   const [formStatus, setFormStatus] = useState<string>("active");
   const [formLang, setFormLang] = useState<string>("en");
   const [submitting, setSubmitting] = useState(false);
@@ -124,7 +124,7 @@ export default function AdminUsersPage() {
       setShowCreateModal(false);
       setFormPhone("");
       setFormDisplayName("");
-      setFormRole("customer");
+      setFormRole("operations_manager");
       setFormStatus("active");
       loadUsers();
     } catch (err: any) {
@@ -183,7 +183,7 @@ export default function AdminUsersPage() {
           onClick={() => {
             setFormPhone("");
             setFormDisplayName("");
-            setFormRole("customer");
+            setFormRole("operations_manager");
             setFormStatus("active");
             setFormLang("en");
             setFormError("");
@@ -219,10 +219,8 @@ export default function AdminUsersPage() {
             className="text-xs border border-[#D9E2EC]/80 rounded-md px-2.5 py-1.5 bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]"
           >
             <option value="all">All Roles</option>
-            <option value="customer">Customer</option>
-            <option value="vendor">Vendor</option>
-            <option value="worker">Worker</option>
-            <option value="admin">Admin</option>
+            <option value="operations_manager">Operations Manager</option>
+            <option value="operations_executive">Operations Executive</option>
           </select>
 
           <select
@@ -364,7 +362,7 @@ export default function AdminUsersPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       <span className="capitalize font-medium text-slate-700">
-                        {u.role}
+                        {u.role.replace(/_/g, ' ')}
                       </span>
                     </td>
                     <td className="px-4 py-2.5">
@@ -471,10 +469,8 @@ export default function AdminUsersPage() {
                     onChange={(e) => setFormRole(e.target.value)}
                     className="w-full px-2.5 py-1.5 border border-[#D9E2EC]/80 rounded-md bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]"
                   >
-                    <option value="customer">Customer</option>
-                    <option value="vendor">Vendor</option>
-                    <option value="worker">Worker</option>
-                    <option value="admin">Admin</option>
+                    <option value="operations_manager">Operations Manager</option>
+                    <option value="operations_executive">Operations Executive</option>
                   </select>
                 </div>
 
@@ -567,10 +563,8 @@ export default function AdminUsersPage() {
                     onChange={(e) => setFormRole(e.target.value)}
                     className="w-full px-2.5 py-1.5 border border-[#D9E2EC]/80 rounded-md bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]"
                   >
-                    <option value="customer">Customer</option>
-                    <option value="vendor">Vendor</option>
-                    <option value="worker">Worker</option>
-                    <option value="admin">Admin</option>
+                    <option value="operations_manager">Operations Manager</option>
+                    <option value="operations_executive">Operations Executive</option>
                   </select>
                 </div>
 

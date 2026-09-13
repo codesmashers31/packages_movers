@@ -50,8 +50,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
     'settings:manage',
     'permissions:manage',
   ],
-  vendor: [],
-  worker: [],
+  operations_manager: [],
+  operations_executive: [],
   customer: [],
 };
 

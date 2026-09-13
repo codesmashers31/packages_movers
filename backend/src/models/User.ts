@@ -19,7 +19,7 @@ const UserSchema = new Schema<IUser>(
     language: { type: String, default: 'en' },
     role: {
       type: String,
-      enum: ['customer', 'vendor', 'worker', 'admin'],
+      enum: ['customer', 'vendor', 'worker', 'admin', 'operations_manager', 'operations_executive'],
       default: 'customer',
       required: true,
     },

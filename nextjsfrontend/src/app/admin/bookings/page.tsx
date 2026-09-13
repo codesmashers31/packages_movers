@@ -326,25 +326,28 @@ export default function AdminBookingsPage() {
 
       {/* Inspect Booking Modal */}
       {inspectBooking && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40">
-          <div className="w-full max-w-lg bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80 overflow-hidden shadow-lg">
-            <div className="px-5 py-3.5 border-b border-[#D9E2EC]/70 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">
-                  Booking #{inspectBooking._id.slice(-6).toUpperCase()}
-                </h3>
-                <p className="text-[11px] font-mono text-slate-500">{inspectBooking._id}</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-lg bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80 overflow-hidden shadow-lg flex flex-col max-h-[90vh]">
+            <div className="px-5 py-3.5 border-b border-[#D9E2EC]/70 flex items-center justify-between bg-[#EEF2F6] shrink-0">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setInspectBooking(null)}
+                  className="p-1.5 text-slate-500 hover:text-slate-700 bg-white/50 hover:bg-white rounded-lg shadow-sm border border-[#D9E2EC]/70 transition cursor-pointer"
+                  title="Go Back"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                </button>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Booking #{inspectBooking._id.slice(-6).toUpperCase()}
+                  </h3>
+                  <p className="text-[11px] font-mono text-slate-500">{inspectBooking._id}</p>
+                </div>
               </div>
-              <button
-                onClick={() => setInspectBooking(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded transition cursor-pointer"
-              >
-                <X size={16} />
-              </button>
             </div>
 
-            <div className="p-5 space-y-3.5 text-xs">
-              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-100">
+            <div className="p-5 space-y-4 text-xs overflow-y-auto min-h-0">
+              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-200">
                 <div>
                   <span className="text-slate-500 block mb-0.5">Status</span>
                   <StatusBadge status={inspectBooking.status} />
@@ -359,17 +362,17 @@ export default function AdminBookingsPage() {
 
               {/* Delivery Code Pill */}
               {inspectBooking.deliveryCode && (
-                <div className="p-3 bg-[#EEF2F6] rounded-md border border-[#D9E2EC]/70 flex items-center justify-between">
+                <div className="p-3 bg-white rounded-xl shadow-sm border border-[#D9E2EC]/70 flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <span className="font-medium text-slate-900 flex items-center gap-1.5">
-                      <KeyRound size={13} className="text-slate-500" />
+                    <span className="font-medium text-slate-900 flex items-center gap-1.5 text-sm">
+                      <KeyRound size={14} className="text-slate-500" />
                       Delivery Authorization Code
                     </span>
                     <p className="text-[11px] text-slate-500">
                       Presented by customer upon physical dropoff verification
                     </p>
                   </div>
-                  <span className="font-mono text-sm font-semibold bg-[#EEF2F6] px-2.5 py-1 rounded border border-[#D9E2EC]/80 text-slate-900">
+                  <span className="font-mono text-sm font-bold bg-[#EEF2F6] px-3 py-1.5 rounded-lg border border-[#D9E2EC]/80 text-slate-900 shadow-sm">
                     {inspectBooking.deliveryCode}
                   </span>
                 </div>
@@ -388,30 +391,38 @@ export default function AdminBookingsPage() {
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <span className="text-slate-500 block">Move Route</span>
-                <div className="p-3 bg-[#EEF2F6] rounded-md border border-[#D9E2EC]/70 space-y-1.5">
-                  <p className="text-slate-800">
-                    <strong className="text-slate-500 font-medium">Pickup: </strong>
-                    {inspectBooking.requestId?.pickupAddress?.street},{" "}
-                    {inspectBooking.requestId?.pickupAddress?.city}
-                    {inspectBooking.requestId?.pickupAddress?.postalCode ? ` - ${inspectBooking.requestId?.pickupAddress?.postalCode}` : ""}
-                  </p>
-                  <p className="text-slate-800">
-                    <strong className="text-slate-500 font-medium">Dropoff: </strong>
-                    {inspectBooking.requestId?.destinationAddress?.street},{" "}
-                    {inspectBooking.requestId?.destinationAddress?.city}
-                    {inspectBooking.requestId?.destinationAddress?.postalCode ? ` - ${inspectBooking.requestId?.destinationAddress?.postalCode}` : ""}
-                  </p>
+              <div className="pt-2">
+                <span className="text-slate-500 block mb-1.5 font-medium border-b border-[#D9E2EC]/70 pb-1">Move Route</span>
+                <div className="space-y-2 mt-2">
+                  <div className="p-3 bg-white rounded-xl shadow-sm border border-[#D9E2EC]/70 space-y-2">
+                    <div className="flex items-start gap-2">
+                      <div className="mt-0.5 h-2 w-2 rounded-full bg-blue-500 shrink-0"></div>
+                      <p className="text-slate-800 leading-tight">
+                        <strong className="text-slate-500 font-medium block text-[10px] uppercase tracking-wider mb-0.5">Pickup</strong>
+                        {inspectBooking.requestId?.pickupAddress?.street},{" "}
+                        {inspectBooking.requestId?.pickupAddress?.city}
+                        {inspectBooking.requestId?.pickupAddress?.postalCode ? ` - ${inspectBooking.requestId?.pickupAddress?.postalCode}` : ""}
+                      </p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <div className="mt-0.5 h-2 w-2 rounded-full bg-emerald-500 shrink-0"></div>
+                      <p className="text-slate-800 leading-tight">
+                        <strong className="text-slate-500 font-medium block text-[10px] uppercase tracking-wider mb-0.5">Dropoff</strong>
+                        {inspectBooking.requestId?.destinationAddress?.street},{" "}
+                        {inspectBooking.requestId?.destinationAddress?.city}
+                        {inspectBooking.requestId?.destinationAddress?.postalCode ? ` - ${inspectBooking.requestId?.destinationAddress?.postalCode}` : ""}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               {inspectBooking.quoteSnapshot && (
-                <div className="pt-2 border-t border-slate-100">
-                  <span className="text-slate-500 block mb-1">Agreed Quote Snapshot</span>
-                  <div className="p-3 bg-[#EEF2F6] rounded-md border border-[#D9E2EC]/70 flex justify-between items-center">
-                    <span className="text-slate-600">Total Contract Value:</span>
-                    <span className="font-semibold text-sm text-slate-900 font-mono">
+                <div className="pt-2 border-t border-[#D9E2EC]/70">
+                  <span className="text-slate-500 block mb-2 font-medium">Agreed Quote Snapshot</span>
+                  <div className="p-3 bg-white rounded-xl shadow-sm border border-[#D9E2EC]/70 flex justify-between items-center">
+                    <span className="text-slate-600 font-medium">Total Contract Value:</span>
+                    <span className="font-bold text-base text-slate-900 font-mono">
                       ₹{((inspectBooking.quoteSnapshot.totalAmountMinorUnits || 0) / 100).toLocaleString()}
                     </span>
                   </div>
@@ -419,18 +430,18 @@ export default function AdminBookingsPage() {
               )}
 
               {/* Operational Status Transition */}
-              <div className="pt-3 border-t border-slate-100 space-y-2">
+              <div className="pt-3 border-t border-[#D9E2EC]/70 space-y-2 mt-2">
                 <div className="flex items-center justify-between">
                   <span className="text-slate-800 font-semibold text-xs">Operational Status Transition</span>
-                  {statusError && <span className="text-rose-600 text-[11px]">{statusError}</span>}
+                  {statusError && <span className="text-rose-600 text-[11px] font-medium px-2 py-0.5 bg-rose-50 rounded border border-rose-100">{statusError}</span>}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white p-3 rounded-xl border border-[#D9E2EC]/70 shadow-sm">
                   <div>
-                    <label className="text-[11px] text-slate-500 block mb-1">New Lifecycle State</label>
+                    <label className="text-[11px] text-slate-500 block mb-1.5 font-medium">New Lifecycle State</label>
                     <select
                       value={statusUpdate}
                       onChange={(e) => setStatusUpdate(e.target.value)}
-                      className="w-full text-xs border border-[#D9E2EC]/80 rounded px-2.5 py-1.5 bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]"
+                      className="w-full text-xs border border-[#D9E2EC]/80 rounded-lg px-2.5 py-1.5 bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] shadow-inner"
                     >
                       <option value="PENDING_PAYMENT">PENDING_PAYMENT</option>
                       <option value="CONFIRMED">CONFIRMED</option>
@@ -449,21 +460,21 @@ export default function AdminBookingsPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="text-[11px] text-slate-500 block mb-1">Audit Log Note</label>
+                    <label className="text-[11px] text-slate-500 block mb-1.5 font-medium">Audit Log Note</label>
                     <input
                       type="text"
                       placeholder="Reason for change..."
                       value={statusReason}
                       onChange={(e) => setStatusReason(e.target.value)}
-                      className="w-full text-xs border border-[#D9E2EC]/80 rounded px-2.5 py-1.5 bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB]"
+                      className="w-full text-xs border border-[#D9E2EC]/80 rounded-lg px-2.5 py-1.5 bg-[#EEF2F6] text-slate-700 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] shadow-inner"
                     />
                   </div>
                 </div>
-                <div className="flex justify-end pt-1">
+                <div className="flex justify-end pt-2">
                   <button
                     onClick={handleBookingStatusChange}
                     disabled={statusSubmitting || statusUpdate === inspectBooking.status}
-                    className="px-3 py-1.5 neu-btn-primary text-white rounded text-xs font-medium shadow-neu-flat-sm transition cursor-pointer disabled:opacity-50"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium shadow-sm transition cursor-pointer disabled:opacity-50"
                   >
                     {statusSubmitting ? "Updating..." : "Update Move Status"}
                   </button>
@@ -471,10 +482,10 @@ export default function AdminBookingsPage() {
               </div>
             </div>
 
-            <div className="px-5 py-3 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex justify-end">
+            <div className="px-5 py-3.5 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex justify-end shrink-0">
               <button
                 onClick={() => setInspectBooking(null)}
-                className="px-3 py-1.5 border border-[#D9E2EC]/80 text-slate-700 hover:bg-[#EEF2F6] rounded-md transition cursor-pointer text-xs"
+                className="px-4 py-2 bg-white text-slate-700 hover:bg-slate-50 font-medium rounded-lg transition cursor-pointer shadow-sm border border-slate-200"
               >
                 Close
               </button>
