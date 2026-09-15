@@ -28,8 +28,14 @@ export interface IMovingRequest extends Document {
     isFragile?: boolean;
   }>;
   requestedServices: string[];
+  category?: string;
   revision: number;
   status: RequestStatus;
+  commonRejectionFeedback?: {
+    reasons: string[];
+    comment?: string;
+    submittedAt: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,12 +70,22 @@ const MovingRequestSchema = new Schema<IMovingRequest>(
       },
     ],
     requestedServices: [{ type: String }],
+    category: {
+      type: String,
+      default: 'Heavy Load House Shifting',
+      index: true,
+    },
     revision: { type: Number, default: 1 },
     status: {
       type: String,
       enum: ['DRAFT', 'OPEN', 'RESERVED', 'BOOKED', 'CLOSED', 'EXPIRED'],
       default: 'OPEN',
       index: true,
+    },
+    commonRejectionFeedback: {
+      reasons: [{ type: String }],
+      comment: { type: String },
+      submittedAt: { type: Date },
     },
   },
   { timestamps: true }

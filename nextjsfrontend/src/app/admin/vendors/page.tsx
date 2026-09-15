@@ -6,6 +6,7 @@ import { fetchApi } from "@/lib/api";
 import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import ConfirmModal from "../components/ConfirmModal";
+import DocumentViewerModal from "../components/DocumentViewerModal";
 import {
   Search,
   Plus,
@@ -26,7 +27,26 @@ import {
   XCircle,
   Check,
   Store,
+  Building2,
+  UserCheck,
+  FileText,
+  MessageSquare,
 } from "lucide-react";
+
+interface DocumentRecord {
+  type: string;
+  name?: string;
+  category?: string;
+  fileUrl?: string;
+  fileName?: string;
+  fileSize?: string;
+  idType?: string;
+  maskedIdNumber?: string;
+  status: "NOT_SUBMITTED" | "PENDING_REVIEW" | "CHANGES_REQUESTED" | "APPROVED" | "REJECTED";
+  submittedAt?: string;
+  reviewedAt?: string;
+  feedback?: string;
+}
 
 interface VendorItem {
   _id: string;
@@ -37,13 +57,86 @@ interface VendorItem {
   serviceAreas: string[];
   servicesOffered: string[];
   ownerId?: { displayName?: string; phone?: string };
-  verificationDetails?: Record<string, any>;
+  verificationDetails?: {
+    lastReviewedAt?: string;
+    reviewReason?: string;
+    documents?: DocumentRecord[];
+    [key: string]: any;
+  };
   createdAt: string;
 }
 
+const STANDARD_KYC_DOCS = [
+  // Section 1: Business
+  {
+    type: "GST_CERTIFICATE",
+    category: "BUSINESS",
+    title: "GST Registration Certificate",
+    description: "Mandatory GSTIN certificate issued by Central Board of Indirect Taxes and Customs.",
+  },
+  {
+    type: "TRANSPORT_PERMIT",
+    category: "BUSINESS",
+    title: "All India Goods Transport Permit",
+    description: "State / National transport authority commercial logistics permit.",
+  },
+  {
+    type: "TRANSIT_INSURANCE",
+    category: "BUSINESS",
+    title: "Goods In-Transit Insurance Policy",
+    description: "Indemnity policy protecting cargo and customer goods during transit.",
+  },
+  {
+    type: "BUSINESS_PAN",
+    category: "BUSINESS",
+    title: "Company / Business PAN Card",
+    description: "Permanent Account Number issued by Income Tax Department.",
+  },
+  // Section 2: Owner / Representative
+  {
+    type: "REPRESENTATIVE_ID_PROOF",
+    category: "REPRESENTATIVE",
+    title: "Government Identity Proof",
+    description: "Official ID proof (Aadhaar, Passport, Driving Licence, or Other) of owner / representative.",
+  },
+  {
+    type: "REPRESENTATIVE_PHOTO",
+    category: "REPRESENTATIVE",
+    title: "Owner / Representative Photo",
+    description: "Photograph of the business owner or authorized representative for KYC.",
+  },
+];
+
+const VENDORS_CACHE_KEY = "pm_admin_vendors_cache";
+
 export default function AdminVendorsPage() {
-  const [vendors, setVendors] = useState<VendorItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [vendors, setVendors] = useState<VendorItem[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed.vendors) && parsed.vendors.length > 0) return parsed.vendors;
+        }
+      } catch {}
+    }
+    return [];
+  });
+
+  const [loading, setLoading] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed.vendors) && parsed.vendors.length > 0) return false;
+        }
+      } catch {}
+    }
+    return true;
+  });
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [toastMessage, setToastMessage] = useState("");
   const [search, setSearch] = useState("");
@@ -55,10 +148,45 @@ export default function AdminVendorsPage() {
   const [totalCount, setTotalCount] = useState(0);
 
   // Overall metric counts
-  const [allVendorCount, setAllVendorCount] = useState(0);
-  const [approvedCount, setApprovedCount] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [suspendedCount, setSuspendedCount] = useState(0);
+  const [allVendorCount, setAllVendorCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) return JSON.parse(cached).allVendorCount || 0;
+      } catch {}
+    }
+    return 0;
+  });
+
+  const [approvedCount, setApprovedCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) return JSON.parse(cached).approvedCount || 0;
+      } catch {}
+    }
+    return 0;
+  });
+
+  const [pendingCount, setPendingCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) return JSON.parse(cached).pendingCount || 0;
+      } catch {}
+    }
+    return 0;
+  });
+
+  const [suspendedCount, setSuspendedCount] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = sessionStorage.getItem(VENDORS_CACHE_KEY);
+        if (cached) return JSON.parse(cached).suspendedCount || 0;
+      } catch {}
+    }
+    return 0;
+  });
 
   // Add Vendor Modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -95,6 +223,144 @@ export default function AdminVendorsPage() {
   // Delete Modal
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
 
+  // Document Single Review Prompt Modal
+  const [docReviewPrompt, setDocReviewPrompt] = useState<{
+    vendorId: string;
+    docType: string;
+    title: string;
+    decision: "CHANGES_REQUESTED" | "REJECTED";
+  } | null>(null);
+  const [docReviewReason, setDocReviewReason] = useState("");
+
+  // Document Quick Viewer Modal
+  const [viewingFile, setViewingFile] = useState<{
+    title: string;
+    fileUrl: string;
+    fileName?: string;
+    fileSize?: string;
+    docType?: string;
+    vendorId?: string;
+    vendorName?: string;
+    status?: string;
+    feedback?: string;
+    idType?: string;
+    maskedIdNumber?: string;
+  } | null>(null);
+
+  const handleDocumentDecision = async (
+    vendorId: string,
+    docType: string,
+    decision: "APPROVED" | "CHANGES_REQUESTED" | "REJECTED",
+    reason?: string
+  ) => {
+    try {
+      // 1. Optimistically update in-place in inspectVendor
+      setInspectVendor((prev) => {
+        if (!prev) return null;
+        const docs = [...(prev.verificationDetails?.documents || [])];
+        const idx = docs.findIndex((d) => d.type === docType);
+        const updatedDoc = {
+          type: docType,
+          status: decision,
+          feedback: reason || (decision === "APPROVED" ? "Approved and verified by administrator." : decision === "CHANGES_REQUESTED" ? "Revision requested: please upload an updated copy." : "Document rejected by administrator."),
+          reviewedAt: new Date().toISOString(),
+        };
+        if (idx >= 0) {
+          docs[idx] = { ...docs[idx], ...updatedDoc };
+        } else {
+          docs.push(updatedDoc);
+        }
+
+        const changesRequested = docs.some((d) => d.status === "CHANGES_REQUESTED");
+        const rejected = docs.some((d) => d.status === "REJECTED");
+        const approvedCount = docs.filter((d) => d.status === "APPROVED").length;
+        let newVendorStatus = prev.status;
+        if (changesRequested) {
+          newVendorStatus = "CHANGES_REQUESTED";
+        } else if (rejected) {
+          newVendorStatus = "REJECTED";
+        } else if (docs.length >= 6 && approvedCount === docs.length) {
+          newVendorStatus = "APPROVED";
+        } else {
+          newVendorStatus = "PENDING_REVIEW";
+        }
+
+        return {
+          ...prev,
+          status: newVendorStatus,
+          verificationDetails: {
+            ...prev.verificationDetails,
+            documents: docs,
+          },
+        };
+      });
+
+      // 2. Optimistically update vendors list
+      setVendors((prev) =>
+        prev.map((v) => {
+          if (v._id !== vendorId) return v;
+          const docs = [...(v.verificationDetails?.documents || [])];
+          const idx = docs.findIndex((d) => d.type === docType);
+          const updatedDoc = {
+            type: docType,
+            status: decision,
+            feedback: reason || "",
+            reviewedAt: new Date().toISOString(),
+          };
+          if (idx >= 0) {
+            docs[idx] = { ...docs[idx], ...updatedDoc };
+          } else {
+            docs.push(updatedDoc);
+          }
+          const changesRequested = docs.some((d) => d.status === "CHANGES_REQUESTED");
+          const rejected = docs.some((d) => d.status === "REJECTED");
+          const approvedCount = docs.filter((d) => d.status === "APPROVED").length;
+          let newVendorStatus = v.status;
+          if (changesRequested) newVendorStatus = "CHANGES_REQUESTED";
+          else if (rejected) newVendorStatus = "REJECTED";
+          else if (docs.length >= 6 && approvedCount === docs.length) newVendorStatus = "APPROVED";
+          else newVendorStatus = "PENDING_REVIEW";
+
+          return {
+            ...v,
+            status: newVendorStatus,
+            verificationDetails: {
+              ...v.verificationDetails,
+              documents: docs,
+            },
+          };
+        })
+      );
+
+      // 3. Update viewingFile if viewing in modal
+      setViewingFile((prev) => {
+        if (prev && prev.vendorId === vendorId && prev.docType === docType) {
+          return {
+            ...prev,
+            status: decision,
+            feedback: reason || prev.feedback,
+          };
+        }
+        return prev;
+      });
+
+      // 4. Send API PATCH request to backend
+      await fetchApi(`/admin/vendors/${vendorId}/documents/${docType}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          decision,
+          reason: reason || (decision === "APPROVED" ? "Approved and verified by administrator." : decision === "CHANGES_REQUESTED" ? "Revision requested: please upload an updated copy." : "Document rejected by administrator."),
+        }),
+      });
+
+      showToast(`Document marked as ${decision === "APPROVED" ? "Approved" : decision === "CHANGES_REQUESTED" ? "Changes Requested" : "Rejected"} successfully.`);
+      loadVendors();
+    } catch (err: any) {
+      setError(err.message || "Failed to update document status");
+      loadVendors();
+    }
+  };
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -102,8 +368,12 @@ export default function AdminVendorsPage() {
     }, 4000);
   };
 
-  const loadVendors = async () => {
-    setLoading(true);
+  const loadVendors = async (forceSkeleton = false) => {
+    if (forceSkeleton || vendors.length === 0) {
+      setLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
     setError("");
     try {
       const params = new URLSearchParams({
@@ -127,22 +397,52 @@ export default function AdminVendorsPage() {
         }>("/admin/dashboard/stats").catch(() => null),
       ]);
 
-      setVendors(res.vendors || []);
-      setTotalPages(res.pagination?.totalPages || 1);
-      setTotalCount(res.pagination?.total || 0);
+      const vList = res.vendors || [];
+      const tPages = res.pagination?.totalPages || 1;
+      const tCount = res.pagination?.total || 0;
+
+      setVendors(vList);
+      setTotalPages(tPages);
+      setTotalCount(tCount);
+
+      let allCount = tCount;
+      let appCount = 0;
+      let pendCount = 0;
+      let suspCount = 0;
 
       if (statsRes) {
-        setAllVendorCount(statsRes.stats.totalVendors || 0);
-        setApprovedCount(statsRes.stats.approvedVendors || 0);
-        setPendingCount(statsRes.stats.pendingVendorRequests || 0);
-        setSuspendedCount(statsRes.distributions?.vendorStatus?.SUSPENDED || 0);
+        allCount = statsRes.stats.totalVendors || 0;
+        appCount = statsRes.stats.approvedVendors || 0;
+        pendCount = statsRes.stats.pendingVendorRequests || 0;
+        suspCount = statsRes.distributions?.vendorStatus?.SUSPENDED || 0;
+        setAllVendorCount(allCount);
+        setApprovedCount(appCount);
+        setPendingCount(pendCount);
+        setSuspendedCount(suspCount);
       } else {
-        setAllVendorCount(res.pagination?.total || 0);
+        setAllVendorCount(tCount);
+      }
+
+      // Save default first page in session cache
+      if (page === 1 && !search && statusFilter === "all") {
+        try {
+          sessionStorage.setItem(
+            VENDORS_CACHE_KEY,
+            JSON.stringify({
+              vendors: vList,
+              allVendorCount: allCount,
+              approvedCount: appCount,
+              pendingCount: pendCount,
+              suspendedCount: suspCount,
+            })
+          );
+        } catch {}
       }
     } catch (err: any) {
       setError(err.message || "Failed to load vendors");
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   };
 
@@ -774,14 +1074,14 @@ export default function AdminVendorsPage() {
                     {/* Actions Column (Segmented Group) */}
                     <td className="px-5 py-2.5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center justify-end gap-1 bg-[#EEF2F6] shadow-neu-flat border border-white/80 p-1 rounded-lg">
-                        {/* 1. View / Inspect Details */}
-                        <button
-                          onClick={() => setInspectVendor(v)}
-                          className="p-1.5 text-[#64748B] hover:text-[#2563EB] hover:bg-[#EEF2F6] rounded transition cursor-pointer"
-                          title="View Details"
-                        >
-                          <Eye size={14} />
-                        </button>
+                          {/* 1. View / Inspect Details */}
+                          <button
+                            onClick={() => setInspectVendor(v)}
+                            className="p-1.5 text-[#64748B] hover:text-[#2563EB] hover:bg-[#EEF2F6] rounded transition cursor-pointer"
+                            title="View Details"
+                          >
+                            <Eye size={14} />
+                          </button>
 
                         {/* 2. Edit Vendor Details */}
                         <button
@@ -866,7 +1166,7 @@ export default function AdminVendorsPage() {
                         </button>
                       </div>
                     </td>
-                  </tr>
+                    </tr>
                 ))
               )}
             </tbody>
@@ -1121,93 +1421,203 @@ export default function AdminVendorsPage() {
 
       {/* Inspect Vendor Modal */}
       {inspectVendor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1E293B]/50 backdrop-blur-2xs">
-          <div className="w-full max-w-lg bg-[#EEF2F6] rounded-xl border border-[#D9E2EC]/70 overflow-hidden shadow-xl">
-            <div className="px-5 py-4 bg-[#EEF2F6] border-b border-[#D9E2EC]/70 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/50 backdrop-blur-2xs">
+          <div className="w-full max-w-3xl bg-[#EEF2F6] rounded-3xl shadow-neu-flat border border-white/80 overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-scaleUp">
+            <div className="px-6 py-4 bg-[#EEF2F6] border-b border-[#D9E2EC]/70 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-lg bg-blue-50/80 border border-blue-200/80 flex items-center justify-center font-bold text-sm text-[#2563EB] shadow-neu-inset-sm">
+                <div className="h-10 w-10 rounded-xl bg-blue-50/80 border border-blue-200/80 flex items-center justify-center font-bold text-sm text-[#2563EB] shadow-neu-inset-sm">
                   {getMonogram(inspectVendor.businessName)}
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-[#1E293B]">{inspectVendor.businessName}</h3>
-                  <p className="text-[11px] text-[#64748B]">Vendor ID: {inspectVendor._id}</p>
+                  <h3 className="text-base font-bold text-[#1E293B]">{inspectVendor.businessName}</h3>
+                  <p className="text-xs text-[#64748B]">Vendor ID: {inspectVendor._id}</p>
                 </div>
               </div>
-              <button
-                onClick={() => setInspectVendor(null)}
-                className="p-1 text-[#64748B] hover:text-[#1E293B] rounded transition cursor-pointer"
-              >
-                <X size={16} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setInspectVendor(null)}
+                  className="p-1.5 text-[#64748B] hover:text-[#1E293B] rounded-xl transition cursor-pointer"
+                  title="Close Modal"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
-            <div className="p-5 space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-[#D9E2EC]/70">
+            <div className="p-6 space-y-5 text-xs overflow-y-auto max-h-[70vh]">
+              <div className="p-4 rounded-2xl bg-white/70 border border-[#D9E2EC]/70 grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
-                  <span className="text-[#64748B] block mb-1 font-medium">Status</span>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">Status</span>
                   <StatusBadge status={inspectVendor.status} />
                 </div>
                 <div>
-                  <span className="text-[#64748B] block mb-1 font-medium">Registered Date</span>
-                  <span className="font-semibold text-[#1E293B] font-mono">
-                    {new Date(inspectVendor.createdAt).toLocaleString()}
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">Registered Date</span>
+                  <span className="font-semibold text-slate-800 font-mono text-[11px]">
+                    {new Date(inspectVendor.createdAt).toLocaleDateString("en-IN")}
                   </span>
                 </div>
-              </div>
-
-              <div>
-                <span className="text-[#64748B] block mb-1 font-medium">Contact Credentials</span>
-                <p className="font-semibold text-[#1E293B] font-mono">Phone: {inspectVendor.contactPhone}</p>
-                {inspectVendor.contactEmail && (
-                  <p className="text-[#64748B] mt-0.5">Email: {inspectVendor.contactEmail}</p>
-                )}
-              </div>
-
-              <div>
-                <span className="text-[#64748B] block mb-1 font-medium">Service Areas</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {inspectVendor.serviceAreas?.length ? (
-                    inspectVendor.serviceAreas.map((a, i) => (
-                      <span
-                        key={i}
-                        className="px-2.5 py-1 bg-[#EEF2F6] shadow-neu-flat border border-white/80 rounded-lg text-[#1E293B] font-mono text-xs"
-                      >
-                        {a}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[#94A3B8] italic">No specific areas registered</span>
-                  )}
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">Phone</span>
+                  <p className="font-semibold text-slate-800 font-mono text-[11px]">{inspectVendor.contactPhone}</p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">Email</span>
+                  <p className="text-slate-700 truncate text-[11px]">{inspectVendor.contactEmail || "—"}</p>
                 </div>
               </div>
 
-              <div>
-                <span className="text-[#64748B] block mb-1 font-medium">Offered Move Services</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {inspectVendor.servicesOffered?.length ? (
-                    inspectVendor.servicesOffered.map((s, i) => (
-                      <span
-                        key={i}
-                        className="px-2.5 py-1 bg-[#EEF2F6] shadow-neu-flat border border-white/80 text-[#1E293B] rounded-lg capitalize text-xs"
-                      >
-                        {s}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[#94A3B8] italic">Standard move services</span>
-                  )}
-                </div>
-              </div>
-
-              {inspectVendor.verificationDetails &&
-                Object.keys(inspectVendor.verificationDetails).length > 0 && (
-                  <div className="p-3 bg-[#EEF2F6] rounded-lg border border-[#D9E2EC]/70">
-                    <span className="font-semibold text-[#1E293B] block mb-1">Verification Records</span>
-                    <pre className="text-[11px] font-mono text-[#64748B] whitespace-pre-wrap">
-                      {JSON.stringify(inspectVendor.verificationDetails, null, 2)}
-                    </pre>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Service Areas</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {inspectVendor.serviceAreas?.length ? (
+                      inspectVendor.serviceAreas.map((a, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 bg-[#EEF2F6] shadow-neu-flat border border-white/80 rounded-lg text-slate-700 font-mono text-[11px]"
+                        >
+                          {a}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-400 italic text-[11px]">No specific areas registered</span>
+                    )}
                   </div>
-                )}
+                </div>
+
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Offered Move Services</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {inspectVendor.servicesOffered?.length ? (
+                      inspectVendor.servicesOffered.map((s, i) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 bg-[#EEF2F6] shadow-neu-flat border border-white/80 text-slate-700 rounded-lg capitalize text-[11px]"
+                        >
+                          {s}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-slate-400 italic text-[11px]">Standard move services</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 1: BUSINESS VERIFICATION (4 DOCUMENTS) */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
+                  <Building2 size={16} className="text-[#2563EB]" />
+                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                    Section 1 — Business Verification (Commercial Documents)
+                  </h4>
+                </div>
+
+                <div className="space-y-2.5">
+                  {STANDARD_KYC_DOCS.filter((d) => d.category === "BUSINESS").map((std) => {
+                    const submitted = (inspectVendor.verificationDetails?.documents || []).find(
+                      (d: any) => d.type === std.type
+                    );
+                    const status = submitted?.status || "NOT_SUBMITTED";
+
+                    return (
+                      <AdminDocReviewRow
+                        key={std.type}
+                        title={std.title}
+                        type={std.type}
+                        description={std.description}
+                        submitted={submitted}
+                        status={status}
+                        onView={() =>
+                          setViewingFile({
+                            title: std.title,
+                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectVendor._id}/documents/${std.type}/view`,
+                            fileName: submitted?.fileName,
+                            fileSize: submitted?.fileSize,
+                            docType: std.type,
+                            vendorId: inspectVendor._id,
+                            vendorName: inspectVendor.businessName,
+                            status,
+                            feedback: submitted?.feedback,
+                            idType: submitted?.idType,
+                            maskedIdNumber: submitted?.maskedIdNumber,
+                          })
+                        }
+                        onApprove={() => handleDocumentDecision(inspectVendor._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
+                        onRequestChanges={() => handleDocumentDecision(inspectVendor._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
+                        onReject={() => handleDocumentDecision(inspectVendor._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
+                        onFeedbackNotes={() => {
+                          setDocReviewReason(submitted?.feedback || "");
+                          setDocReviewPrompt({
+                            vendorId: inspectVendor._id,
+                            docType: std.type,
+                            title: std.title,
+                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 DOCUMENTS) */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
+                  <UserCheck size={16} className="text-[#14B8A6]" />
+                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                    Section 2 — Owner / Authorized Representative Verification
+                  </h4>
+                </div>
+
+                <div className="space-y-2.5">
+                  {STANDARD_KYC_DOCS.filter((d) => d.category === "REPRESENTATIVE").map((std) => {
+                    const submitted = (inspectVendor.verificationDetails?.documents || []).find(
+                      (d: any) => d.type === std.type
+                    );
+                    const status = submitted?.status || "NOT_SUBMITTED";
+
+                    return (
+                      <AdminDocReviewRow
+                        key={std.type}
+                        title={std.title}
+                        type={std.type}
+                        description={std.description}
+                        submitted={submitted}
+                        status={status}
+                        isPhoto={std.type === "REPRESENTATIVE_PHOTO"}
+                        onView={() =>
+                          setViewingFile({
+                            title: std.title,
+                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectVendor._id}/documents/${std.type}/view`,
+                            fileName: submitted?.fileName,
+                            fileSize: submitted?.fileSize,
+                            docType: std.type,
+                            vendorId: inspectVendor._id,
+                            vendorName: inspectVendor.businessName,
+                            status,
+                            feedback: submitted?.feedback,
+                            idType: submitted?.idType,
+                            maskedIdNumber: submitted?.maskedIdNumber,
+                          })
+                        }
+                        onApprove={() => handleDocumentDecision(inspectVendor._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
+                        onRequestChanges={() => handleDocumentDecision(inspectVendor._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
+                        onReject={() => handleDocumentDecision(inspectVendor._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
+                        onFeedbackNotes={() => {
+                          setDocReviewReason(submitted?.feedback || "");
+                          setDocReviewPrompt({
+                            vendorId: inspectVendor._id,
+                            docType: std.type,
+                            title: std.title,
+                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             {/* Inspect Modal Action Footer */}
@@ -1315,6 +1725,324 @@ export default function AdminVendorsPage() {
         onConfirm={handleConfirmDelete}
         onClose={() => setDeleteModalOpen(false)}
       />
+
+      {/* DOCUMENT FEEDBACK / REVISION REASON PROMPT */}
+      {docReviewPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-[#EEF2F6] rounded-3xl shadow-neu-flat border border-white/80 p-6 max-w-md w-full space-y-4 animate-scaleUp">
+            <div className="flex items-center justify-between border-b border-[#D9E2EC]/80 pb-3">
+              <h3 className="text-sm font-bold text-slate-900">
+                {docReviewPrompt.decision === "CHANGES_REQUESTED"
+                  ? "Request Changes on Document"
+                  : "Reject Document"}
+              </h3>
+              <button
+                onClick={() => setDocReviewPrompt(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Document: <strong>{docReviewPrompt.title}</strong>
+            </p>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-slate-600 uppercase">
+                Admin Review Feedback / Reason for Vendor *
+              </label>
+              <textarea
+                rows={3}
+                required
+                value={docReviewReason}
+                onChange={(e) => setDocReviewReason(e.target.value)}
+                placeholder="e.g. Document image is blurry or expired. Please upload a clear valid copy."
+                className="w-full px-3 py-2 bg-[#EEF2F6] shadow-neu-inset-sm rounded-xl border border-white/60 text-xs text-slate-900 focus:outline-hidden"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#D9E2EC]/70">
+              <button
+                onClick={() => setDocReviewPrompt(null)}
+                className="neu-btn px-4 py-1.5 rounded-xl text-xs font-semibold text-slate-600 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const fallback =
+                    docReviewPrompt.decision === "CHANGES_REQUESTED"
+                      ? "Revision requested: please upload an updated and clear copy."
+                      : "Document rejected by administrator.";
+                  const finalReason = docReviewReason.trim() || fallback;
+                  handleDocumentDecision(
+                    docReviewPrompt.vendorId,
+                    docReviewPrompt.docType,
+                    docReviewPrompt.decision,
+                    finalReason
+                  );
+                  setDocReviewPrompt(null);
+                  setDocReviewReason("");
+                }}
+                className={`px-4 py-1.5 rounded-xl text-xs font-bold text-white shadow-neu-raised-sm cursor-pointer transition ${
+                  docReviewPrompt.decision === "REJECTED"
+                    ? "bg-rose-600 hover:bg-rose-700"
+                    : "bg-amber-600 hover:bg-amber-700"
+                }`}
+              >
+                {docReviewPrompt.decision === "CHANGES_REQUESTED"
+                  ? "Submit Revision Request"
+                  : "Confirm Reject"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AUTHENTICATED PDF / KYC DOCUMENT VIEWER MODAL */}
+      <DocumentViewerModal
+        isOpen={!!viewingFile}
+        title={viewingFile?.title || "Verification Document"}
+        fileUrl={viewingFile?.fileUrl}
+        fileName={viewingFile?.fileName}
+        fileSize={viewingFile?.fileSize}
+        docType={viewingFile?.docType}
+        vendorName={viewingFile?.vendorName}
+        status={viewingFile?.status}
+        feedback={viewingFile?.feedback}
+        idType={viewingFile?.idType}
+        maskedIdNumber={viewingFile?.maskedIdNumber}
+        onClose={() => setViewingFile(null)}
+        isAdmin={true}
+        onApprove={() => {
+          if (viewingFile?.vendorId && viewingFile?.docType) {
+            handleDocumentDecision(
+              viewingFile.vendorId,
+              viewingFile.docType,
+              "APPROVED",
+              viewingFile.feedback || "Approved and verified by administrator."
+            );
+            setViewingFile(null);
+          }
+        }}
+        onRequestChanges={() => {
+          if (viewingFile?.vendorId && viewingFile?.docType) {
+            handleDocumentDecision(
+              viewingFile.vendorId,
+              viewingFile.docType,
+              "CHANGES_REQUESTED",
+              viewingFile.feedback || "Revision requested: please upload an updated and clear copy."
+            );
+            setViewingFile(null);
+          }
+        }}
+        onReject={() => {
+          if (viewingFile?.vendorId && viewingFile?.docType) {
+            handleDocumentDecision(
+              viewingFile.vendorId,
+              viewingFile.docType,
+              "REJECTED",
+              viewingFile.feedback || "Document rejected by administrator."
+            );
+            setViewingFile(null);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+// Reusable Document Row for Admin Review
+function AdminDocReviewRow({
+  title,
+  type,
+  description,
+  submitted,
+  status,
+  isPhoto,
+  onView,
+  onApprove,
+  onRequestChanges,
+  onReject,
+  onFeedbackNotes,
+}: {
+  title: string;
+  type: string;
+  description: string;
+  submitted?: DocumentRecord;
+  status: string;
+  isPhoto?: boolean;
+  onView: () => void;
+  onApprove: () => void;
+  onRequestChanges: () => void;
+  onReject: () => void;
+  onFeedbackNotes?: () => void;
+}) {
+  return (
+    <div className="p-3.5 rounded-2xl bg-[#EEF2F6] shadow-neu-inset-sm border border-white/80 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+      <div className="space-y-1 min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-bold text-slate-900">{title}</span>
+          <StatusBadge status={status} />
+          {submitted?.idType && (
+            <span className="text-[10px] font-bold text-[#2563EB] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+              {submitted.idType}
+            </span>
+          )}
+          {submitted?.maskedIdNumber && (
+            <span className="text-[10px] font-mono text-slate-600">
+              {submitted.maskedIdNumber}
+            </span>
+          )}
+        </div>
+
+        <p className="text-[11px] text-slate-500">{description}</p>
+
+        {submitted?.feedback && (
+          <div className="p-2 rounded-lg bg-amber-50 border border-amber-200/80 text-[11px] text-amber-900">
+            <span className="font-bold">Review Feedback:</span> {submitted.feedback}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 text-[10px] text-slate-500 pt-0.5 font-mono">
+          <span>File: {submitted?.fileName || (submitted?.fileUrl ? "attachment" : "None")}</span>
+          {submitted?.fileSize && <span>• {submitted.fileSize}</span>}
+          {submitted?.submittedAt && (
+            <span>• Submitted {new Date(submitted.submittedAt).toLocaleDateString("en-IN")}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Review Actions: Contextual Bidirectional State Toggles */}
+      <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center flex-wrap justify-end">
+        {submitted?.fileUrl && (
+          <button
+            onClick={onView}
+            className="neu-btn px-2.5 py-1 text-slate-700 hover:text-[#2563EB] rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+            title="Inspect File"
+          >
+            <Eye size={12} />
+            <span>View</span>
+          </button>
+        )}
+
+        {/* If APPROVED */}
+        {status === "APPROVED" && (
+          <>
+            <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+              <Check size={11} /> Approved
+            </span>
+            <button
+              onClick={onRequestChanges}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 transition cursor-pointer flex items-center gap-1"
+              title="Change decision: Request revision"
+            >
+              <RotateCcw size={12} />
+              <span>Revise</span>
+            </button>
+            <button
+              onClick={onReject}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 transition cursor-pointer flex items-center gap-1"
+              title="Change decision: Reject document"
+            >
+              <X size={12} />
+              <span>Reject</span>
+            </button>
+          </>
+        )}
+
+        {/* If CHANGES_REQUESTED */}
+        {status === "CHANGES_REQUESTED" && (
+          <>
+            <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1">
+              <RotateCcw size={11} /> Revision Needed
+            </span>
+            <button
+              onClick={onApprove}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition cursor-pointer flex items-center gap-1 shadow-xs"
+              title="Change decision: Approve document"
+            >
+              <Check size={12} />
+              <span>Approve</span>
+            </button>
+            <button
+              onClick={onReject}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 transition cursor-pointer flex items-center gap-1"
+              title="Change decision: Reject document"
+            >
+              <X size={12} />
+              <span>Reject</span>
+            </button>
+          </>
+        )}
+
+        {/* If REJECTED */}
+        {status === "REJECTED" && (
+          <>
+            <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+              <X size={11} /> Rejected
+            </span>
+            <button
+              onClick={onApprove}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition cursor-pointer flex items-center gap-1 shadow-xs"
+              title="Change decision: Approve document"
+            >
+              <Check size={12} />
+              <span>Approve</span>
+            </button>
+            <button
+              onClick={onRequestChanges}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 transition cursor-pointer flex items-center gap-1"
+              title="Change decision: Request revision"
+            >
+              <RotateCcw size={12} />
+              <span>Revise</span>
+            </button>
+          </>
+        )}
+
+        {/* If PENDING_REVIEW or other */}
+        {status !== "APPROVED" && status !== "CHANGES_REQUESTED" && status !== "REJECTED" && (
+          <>
+            <button
+              onClick={onApprove}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 transition cursor-pointer flex items-center gap-1"
+              title="Approve document"
+            >
+              <Check size={12} />
+              <span>Approve</span>
+            </button>
+            <button
+              onClick={onRequestChanges}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 transition cursor-pointer flex items-center gap-1"
+              title="Request revision"
+            >
+              <RotateCcw size={12} />
+              <span>Revise</span>
+            </button>
+            <button
+              onClick={onReject}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 transition cursor-pointer flex items-center gap-1"
+              title="Reject document"
+            >
+              <X size={12} />
+              <span>Reject</span>
+            </button>
+          </>
+        )}
+
+        {/* Optional Custom Notes */}
+        {onFeedbackNotes && (
+          <button
+            onClick={onFeedbackNotes}
+            className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-200/60 rounded-md transition cursor-pointer"
+            title="Add or Edit Feedback Notes"
+          >
+            <MessageSquare size={13} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

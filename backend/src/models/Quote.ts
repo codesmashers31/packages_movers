@@ -8,6 +8,19 @@ export interface IQuote extends Document {
   quoteRevision: number;
   totalAmountMinorUnits: number; // Integer minor units (e.g. Paise or Cents)
   currency: string;
+  vehicleType?: string;
+  vehicleSpecs?: string;
+  crewCount?: number;
+  crewRoles?: string;
+  splitCharges?: {
+    freightMinorUnits?: number;
+    packingMaterialsMinorUnits?: number;
+    loadingUnloadingMinorUnits?: number;
+    dismantlingAssemblyMinorUnits?: number;
+    insuranceMinorUnits?: number;
+    taxGstMinorUnits?: number;
+    otherMinorUnits?: number;
+  };
   itemizedServices: Array<{
     serviceName: string;
     amountMinorUnits: number;
@@ -29,6 +42,19 @@ const QuoteSchema = new Schema<IQuote>(
     quoteRevision: { type: Number, required: true, default: 1 },
     totalAmountMinorUnits: { type: Number, required: true },
     currency: { type: String, default: 'INR', required: true },
+    vehicleType: { type: String },
+    vehicleSpecs: { type: String },
+    crewCount: { type: Number },
+    crewRoles: { type: String },
+    splitCharges: {
+      freightMinorUnits: { type: Number, default: 0 },
+      packingMaterialsMinorUnits: { type: Number, default: 0 },
+      loadingUnloadingMinorUnits: { type: Number, default: 0 },
+      dismantlingAssemblyMinorUnits: { type: Number, default: 0 },
+      insuranceMinorUnits: { type: Number, default: 0 },
+      taxGstMinorUnits: { type: Number, default: 0 },
+      otherMinorUnits: { type: Number, default: 0 },
+    },
     itemizedServices: [
       {
         serviceName: { type: String, required: true },
@@ -41,7 +67,7 @@ const QuoteSchema = new Schema<IQuote>(
     validUntil: { type: Date, required: true },
     status: {
       type: String,
-      enum: ['DRAFT', 'SUBMITTED', 'ACCEPTED', 'WITHDRAWN', 'EXPIRED', 'SUPERSEDED', 'NOT_SELECTED'],
+      enum: ['DRAFT', 'SUBMITTED', 'ACCEPTED', 'WITHDRAWN', 'EXPIRED', 'SUPERSEDED', 'NOT_SELECTED', 'REJECTED'],
       default: 'SUBMITTED',
       index: true,
     },
