@@ -29,6 +29,7 @@ import {
   Store,
   Building2,
   UserCheck,
+  ShieldCheck,
   FileText,
   MessageSquare,
 } from "lucide-react";
@@ -67,43 +68,56 @@ interface VendorItem {
 }
 
 const STANDARD_KYC_DOCS = [
-  // Section 1: Business
+  // Section 1: Company Verification (2 Core Documents)
   {
     type: "GST_CERTIFICATE",
-    category: "BUSINESS",
+    category: "COMPANY",
+    section: "COMPANY",
     title: "GST Registration Certificate",
-    description: "Mandatory GSTIN certificate issued by Central Board of Indirect Taxes and Customs.",
-  },
-  {
-    type: "TRANSPORT_PERMIT",
-    category: "BUSINESS",
-    title: "All India Goods Transport Permit",
-    description: "State / National transport authority commercial logistics permit.",
-  },
-  {
-    type: "TRANSIT_INSURANCE",
-    category: "BUSINESS",
-    title: "Goods In-Transit Insurance Policy",
-    description: "Indemnity policy protecting cargo and customer goods during transit.",
+    description: "Core business identity document required for company approval.",
+    required: true,
   },
   {
     type: "BUSINESS_PAN",
-    category: "BUSINESS",
+    category: "COMPANY",
+    section: "COMPANY",
     title: "Company / Business PAN Card",
-    description: "Permanent Account Number issued by Income Tax Department.",
+    description: "Permanent Account Number registered with Income Tax Department.",
+    required: true,
   },
-  // Section 2: Owner / Representative
+  // Section 2: Owner / Authorized Representative Verification (2 Core Documents)
   {
     type: "REPRESENTATIVE_ID_PROOF",
     category: "REPRESENTATIVE",
+    section: "REPRESENTATIVE",
     title: "Government Identity Proof",
     description: "Official ID proof (Aadhaar, Passport, Driving Licence, or Other) of owner / representative.",
+    required: true,
   },
   {
     type: "REPRESENTATIVE_PHOTO",
     category: "REPRESENTATIVE",
-    title: "Owner / Representative Photo",
-    description: "Photograph of the business owner or authorized representative for KYC.",
+    section: "REPRESENTATIVE",
+    title: "Representative Photo / Camera Capture",
+    description: "Recent photograph of the business owner or authorized representative for identity verification.",
+    required: true,
+  },
+  // Section 3: Operational Compliance (Optional / Service-Specific)
+  {
+    type: "TRANSPORT_PERMIT",
+    category: "OPERATIONAL",
+    section: "OPERATIONAL",
+    title: "All India Goods Transport Permit",
+    description: "Commercial logistics transport permit (operational compliance; does not block core company approval).",
+    required: false,
+  },
+  {
+    type: "TRANSIT_INSURANCE",
+    category: "OPERATIONAL",
+    section: "OPERATIONAL",
+    title: "Goods In-Transit Insurance Policy",
+    description: "Cargo transit indemnity policy protecting customer goods (operational compliance; does not block core company approval).",
+    required: false,
   },
 ];
 
@@ -190,6 +204,12 @@ export default function AdminVendorsPage() {
 
   // Add Vendor Modal
   const [showAddModal, setShowAddModal] = useState(false);
+  const [createdInvitationInfo, setCreatedInvitationInfo] = useState<{
+    businessName: string;
+    invitationUrl: string;
+    invitationToken: string;
+    deliveryStatus?: any;
+  } | null>(null);
   const [formBusinessName, setFormBusinessName] = useState("");
   const [formPhone, setFormPhone] = useState("");
   const [formEmail, setFormEmail] = useState("");
@@ -485,7 +505,13 @@ export default function AdminVendorsPage() {
     setFormError("");
 
     try {
-      await fetchApi("/admin/vendors", {
+      const res = await fetchApi<{
+        vendor: any;
+        invitationUrl?: string;
+        invitationToken?: string;
+        deliveryStatus?: any;
+        message?: string;
+      }>("/admin/vendors", {
         method: "POST",
         body: JSON.stringify({
           businessName: formBusinessName.trim(),
@@ -493,15 +519,25 @@ export default function AdminVendorsPage() {
           contactEmail: formEmail.trim() || undefined,
           serviceAreas: formAreas.split(",").map((s) => s.trim()).filter(Boolean),
           servicesOffered: formServices.split(",").map((s) => s.trim()).filter(Boolean),
-          status: "APPROVED",
         }),
       });
 
       setShowAddModal(false);
+      const name = formBusinessName.trim();
       setFormBusinessName("");
       setFormPhone("");
       setFormEmail("");
-      showToast(`Vendor "${formBusinessName.trim()}" created successfully!`);
+
+      if (res?.invitationUrl) {
+        setCreatedInvitationInfo({
+          businessName: name,
+          invitationUrl: res.invitationUrl,
+          invitationToken: res.invitationToken || "",
+          deliveryStatus: res.deliveryStatus,
+        });
+      }
+
+      showToast(`Vendor "${name}" created with onboarding credentials!`);
       loadVendors();
     } catch (err: any) {
       setFormError(err.message || "Failed to add vendor company");
@@ -1304,6 +1340,65 @@ export default function AdminVendorsPage() {
         </div>
       )}
 
+      {/* Vendor Invitation Ready Modal */}
+      {createdInvitationInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-2xs">
+          <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 p-6 space-y-4 shadow-2xl animate-scaleUp">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-emerald-600">
+                <CheckCircle2 size={20} />
+                <h3 className="font-bold text-sm text-slate-900">Carrier Company Registered</h3>
+              </div>
+              <button
+                onClick={() => setCreatedInvitationInfo(null)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Carrier <strong>{createdInvitationInfo.businessName}</strong> has been registered in{" "}
+              <span className="font-semibold text-amber-600">PENDING_REVIEW</span> status.
+            </p>
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-2xl text-amber-900 text-xs space-y-1">
+              <p className="font-bold">Provider Status: Pending Configuration</p>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Automatic email/SMS dispatch is pending gateway setup. Please provide the secure invitation setup link directly to the carrier owner so they can create their password and submit documents:
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-700">Invitation URL (Valid for 7 Days)</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={createdInvitationInfo.invitationUrl}
+                  className="w-full px-3 py-2 rounded-xl text-xs bg-slate-50 border border-slate-300 font-mono text-slate-700"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(createdInvitationInfo.invitationUrl);
+                    showToast("Invitation URL copied to clipboard!");
+                  }}
+                  className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shrink-0 cursor-pointer"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setCreatedInvitationInfo(null)}
+                className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Vendor Modal */}
       {editModalOpen && editVendor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1E293B]/50 backdrop-blur-2xs">
@@ -1425,8 +1520,13 @@ export default function AdminVendorsPage() {
           <div className="w-full max-w-3xl bg-[#EEF2F6] rounded-3xl shadow-neu-flat border border-white/80 overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-scaleUp">
             <div className="px-6 py-4 bg-[#EEF2F6] border-b border-[#D9E2EC]/70 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-blue-50/80 border border-blue-200/80 flex items-center justify-center font-bold text-sm text-[#2563EB] shadow-neu-inset-sm">
-                  {getMonogram(inspectVendor.businessName)}
+                <div className="h-10 w-10 rounded-xl bg-blue-50/80 border border-blue-200/80 flex items-center justify-center font-bold text-sm text-[#2563EB] shadow-neu-inset-sm overflow-hidden">
+                  {(inspectVendor as any).logoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={(inspectVendor as any).logoUrl} alt="Logo" className="w-full h-full object-cover" />
+                  ) : (
+                    getMonogram(inspectVendor.businessName)
+                  )}
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-[#1E293B]">{inspectVendor.businessName}</h3>
@@ -1445,6 +1545,31 @@ export default function AdminVendorsPage() {
             </div>
 
             <div className="p-6 space-y-5 text-xs overflow-y-auto max-h-[70vh]">
+              {/* Workforce Metrics Snapshot */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-2xl bg-white/80 border border-[#D9E2EC]/70 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase block">Total Workforce</span>
+                  <p className="text-base font-bold text-slate-900 mt-0.5">
+                    {(inspectVendor as any).workforce?.totalEmployees ?? (inspectVendor as any).employeeCount ?? 0}
+                  </p>
+                  <span className="text-[10px] text-slate-400">Registered staff</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-100 shadow-xs">
+                  <span className="text-[10px] font-bold text-indigo-600 uppercase block">Crew & Drivers</span>
+                  <p className="text-base font-bold text-indigo-950 mt-0.5">
+                    {(inspectVendor as any).workforce?.crewWorkers ?? 0}
+                  </p>
+                  <span className="text-[10px] text-indigo-400">Field movers</span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-100 shadow-xs">
+                  <span className="text-[10px] font-bold text-emerald-600 uppercase block">Active Staff</span>
+                  <p className="text-base font-bold text-emerald-950 mt-0.5">
+                    {(inspectVendor as any).workforce?.activeEmployees ?? 0}
+                  </p>
+                  <span className="text-[10px] text-emerald-400">Duty ready</span>
+                </div>
+              </div>
+
               <div className="p-4 rounded-2xl bg-white/70 border border-[#D9E2EC]/70 grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase block mb-0.5">Status</span>
@@ -1504,17 +1629,22 @@ export default function AdminVendorsPage() {
                 </div>
               </div>
 
-              {/* SECTION 1: BUSINESS VERIFICATION (4 DOCUMENTS) */}
+              {/* SECTION 1: COMPANY VERIFICATION (2 CORE DOCUMENTS) */}
               <div className="space-y-3 pt-2">
-                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
-                  <Building2 size={16} className="text-[#2563EB]" />
-                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                    Section 1 — Business Verification (Commercial Documents)
-                  </h4>
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Building2 size={16} className="text-[#2563EB]" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 1 — Company Verification (Core Business Documents)
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#2563EB] bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    2 Core Documents Required
+                  </span>
                 </div>
 
                 <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.category === "BUSINESS").map((std) => {
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "COMPANY" || d.type === "GST_CERTIFICATE" || d.type === "BUSINESS_PAN").map((std) => {
                     const submitted = (inspectVendor.verificationDetails?.documents || []).find(
                       (d: any) => d.type === std.type
                     );
@@ -1561,17 +1691,22 @@ export default function AdminVendorsPage() {
                 </div>
               </div>
 
-              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 DOCUMENTS) */}
+              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 CORE DOCUMENTS) */}
               <div className="space-y-3 pt-2">
-                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
-                  <UserCheck size={16} className="text-[#14B8A6]" />
-                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                    Section 2 — Owner / Authorized Representative Verification
-                  </h4>
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <UserCheck size={16} className="text-[#14B8A6]" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 2 — Owner / Authorized Representative Verification
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#14B8A6] bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                    2 Required Items
+                  </span>
                 </div>
 
                 <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.category === "REPRESENTATIVE").map((std) => {
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "REPRESENTATIVE" || d.type === "REPRESENTATIVE_ID_PROOF" || d.type === "REPRESENTATIVE_PHOTO").map((std) => {
                     const submitted = (inspectVendor.verificationDetails?.documents || []).find(
                       (d: any) => d.type === std.type
                     );
@@ -1586,6 +1721,68 @@ export default function AdminVendorsPage() {
                         submitted={submitted}
                         status={status}
                         isPhoto={std.type === "REPRESENTATIVE_PHOTO"}
+                        onView={() =>
+                          setViewingFile({
+                            title: std.title,
+                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectVendor._id}/documents/${std.type}/view`,
+                            fileName: submitted?.fileName,
+                            fileSize: submitted?.fileSize,
+                            docType: std.type,
+                            vendorId: inspectVendor._id,
+                            vendorName: inspectVendor.businessName,
+                            status,
+                            feedback: submitted?.feedback,
+                            idType: submitted?.idType,
+                            maskedIdNumber: submitted?.maskedIdNumber,
+                          })
+                        }
+                        onApprove={() => handleDocumentDecision(inspectVendor._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
+                        onRequestChanges={() => handleDocumentDecision(inspectVendor._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
+                        onReject={() => handleDocumentDecision(inspectVendor._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
+                        onFeedbackNotes={() => {
+                          setDocReviewReason(submitted?.feedback || "");
+                          setDocReviewPrompt({
+                            vendorId: inspectVendor._id,
+                            docType: std.type,
+                            title: std.title,
+                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* SECTION 3: OPERATIONAL COMPLIANCE (OPTIONAL / SERVICE-SPECIFIC) */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={16} className="text-emerald-600" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 3 — Operational Compliance (Optional / Service-Specific)
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                    Does not block core approval
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "OPERATIONAL" || d.type === "TRANSPORT_PERMIT" || d.type === "TRANSIT_INSURANCE").map((std) => {
+                    const submitted = (inspectVendor.verificationDetails?.documents || []).find(
+                      (d: any) => d.type === std.type
+                    );
+                    const status = submitted?.status || "NOT_SUBMITTED";
+
+                    return (
+                      <AdminDocReviewRow
+                        key={std.type}
+                        title={std.title}
+                        type={std.type}
+                        description={std.description}
+                        submitted={submitted}
+                        status={status}
                         onView={() =>
                           setViewingFile({
                             title: std.title,

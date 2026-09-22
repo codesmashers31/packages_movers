@@ -19,6 +19,23 @@ export interface IUser extends Document {
   adminRole?: string;
   permissions?: string[];
   adminDepartment?: string;
+  department?: string;
+  reportsTo?: mongoose.Types.ObjectId;
+  assignedScope?: {
+    vehicles?: string[];
+    crew?: mongoose.Types.ObjectId[];
+    moves?: mongoose.Types.ObjectId[];
+  };
+  resetPasswordToken?: string;
+  resetPasswordExpires?: Date;
+  invitationTokenHash?: string;
+  invitationExpires?: Date;
+  lastLogin?: Date;
+  lastActivity?: Date;
+  permissionOverrides?: {
+    granted?: string[];
+    revoked?: string[];
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -53,12 +70,52 @@ const UserSchema = new Schema<IUser>(
     skills: [{ type: String }],
     adminRole: {
       type: String,
-      default: 'super_admin',
+      default: function (this: any) {
+        return this.role === 'admin' ? 'super_admin' : undefined;
+      },
     },
     permissions: [{ type: String }],
     adminDepartment: {
       type: String,
       default: 'General Administration',
+    },
+    department: {
+      type: String,
+      default: 'Operations',
+    },
+    reportsTo: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
+    assignedScope: {
+      vehicles: [{ type: String }],
+      crew: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+      moves: [{ type: Schema.Types.ObjectId, ref: 'Booking' }],
+    },
+    resetPasswordToken: {
+      type: String,
+      index: true,
+    },
+    resetPasswordExpires: {
+      type: Date,
+    },
+    invitationTokenHash: {
+      type: String,
+      index: true,
+    },
+    invitationExpires: {
+      type: Date,
+    },
+    lastLogin: {
+      type: Date,
+    },
+    lastActivity: {
+      type: Date,
+    },
+    permissionOverrides: {
+      granted: [{ type: String }],
+      revoked: [{ type: String }],
     },
   },
   { timestamps: true }

@@ -28,6 +28,8 @@ import {
   Lock,
   Layers,
   ShieldCheck,
+  ExternalLink,
+  User,
 } from "lucide-react";
 
 interface AdminEmployee {
@@ -562,7 +564,14 @@ export default function AdminEmployeesPage() {
                             {emp.displayName?.charAt(0).toUpperCase() || "A"}
                           </div>
                           <div>
-                            <p className="font-bold text-[#1E293B]">{emp.displayName}</p>
+                            <Link
+                              href={`/admin/employees/${emp._id}`}
+                              className="font-bold text-[#1E293B] hover:text-[#2563EB] hover:underline inline-flex items-center gap-1 group"
+                              title="View full administrator profile"
+                            >
+                              <span>{emp.displayName}</span>
+                              <ExternalLink size={11} className="opacity-0 group-hover:opacity-100 text-[#2563EB] transition" />
+                            </Link>
                             <div className="flex items-center gap-2 mt-0.5 text-[11px] text-[#64748B]">
                               <span className="font-mono">{emp.phone}</span>
                               {emp.username && (
@@ -637,6 +646,15 @@ export default function AdminEmployeesPage() {
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* View Profile */}
+                          <Link
+                            href={`/admin/employees/${emp._id}`}
+                            title="View Staff Profile"
+                            className="p-1.5 rounded-lg bg-[#EEF2F6] shadow-neu-raised-sm hover:shadow-neu-flat text-[#2563EB] hover:text-blue-800 border border-white/80 transition cursor-pointer"
+                          >
+                            <User size={14} />
+                          </Link>
+
                           {/* Resend / View Credentials */}
                           <button
                             onClick={() => handleResendCredentials(emp)}

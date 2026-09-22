@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, LogOut, Building2, ChevronDown, Check, Sparkles, ShieldCheck } from "lucide-react";
 import { fetchApi } from "@/lib/api";
 import NotificationBell from "@/app/admin/components/NotificationBell";
-import VendorRolePermissionsDrawer from "./VendorRolePermissionsDrawer";
 
 interface VendorHeaderProps {
   onMenuToggle: () => void;
@@ -26,7 +26,6 @@ export default function VendorHeader({ onMenuToggle }: VendorHeaderProps) {
   const [companies, setCompanies] = useState<CompanyItem[]>([]);
   const [activeCompany, setActiveCompany] = useState<CompanyItem | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [permissionsDrawerOpen, setPermissionsDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -186,18 +185,18 @@ export default function VendorHeader({ onMenuToggle }: VendorHeaderProps) {
             </div>
           )}
 
-          {/* Quick Trigger: Permissions & Capabilities Drawer */}
-          <button
-            onClick={() => setPermissionsDrawerOpen(true)}
+          {/* Direct Link to Personal Role & Capabilities Inspection Page */}
+          <Link
+            href="/vendor/my-permissions"
             className="neu-btn px-2.5 py-1.5 rounded-xl text-xs font-semibold text-[#1E293B] hover:text-[#2563EB] flex items-center gap-1.5 cursor-pointer shadow-neu-raised-sm"
-            title="Inspect Carrier Fleet Permissions & Allowed Actions"
+            title="Inspect What You Can Do vs What You Cannot Do"
           >
             <ShieldCheck size={14} className="text-teal-600" />
-            <span className="hidden sm:inline">Role Access</span>
+            <span className="hidden sm:inline">My Capabilities</span>
             <span className="px-1.5 py-0.2 rounded-full bg-teal-100 text-teal-800 text-[10px] font-bold">
               {roleTitle}
             </span>
-          </button>
+          </Link>
 
           {/* Real-time Bidirectional Notification Bell for Carrier */}
           <NotificationBell isVendor={true} />
@@ -209,15 +208,21 @@ export default function VendorHeader({ onMenuToggle }: VendorHeaderProps) {
           </div>
 
           {/* Profile Capsule */}
-          <div className="flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-xl bg-slate-50 border border-slate-200/80">
-            <div className="h-6 w-6 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-[11px] shadow-2xs">
-              {vendorDisplayName.charAt(0).toUpperCase()}
-            </div>
-            <div className="hidden md:block text-left pr-1">
-              <p className="text-xs font-semibold text-slate-800 leading-tight truncate max-w-[120px]">
-                {vendorDisplayName}
-              </p>
-            </div>
+          <div className="flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-xl bg-slate-50 border border-slate-200/80 hover:border-blue-300 transition">
+            <a
+              href="/vendor/profile"
+              title="View Individual Profile & Account Settings"
+              className="flex items-center gap-2 cursor-pointer group"
+            >
+              <div className="h-6 w-6 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-[11px] shadow-2xs group-hover:scale-105 transition">
+                {vendorDisplayName.charAt(0).toUpperCase()}
+              </div>
+              <div className="hidden md:block text-left pr-1">
+                <p className="text-xs font-semibold text-slate-800 leading-tight truncate max-w-[120px] group-hover:text-blue-600 transition">
+                  {vendorDisplayName}
+                </p>
+              </div>
+            </a>
 
             <button
               onClick={handleSignOut}
@@ -229,14 +234,6 @@ export default function VendorHeader({ onMenuToggle }: VendorHeaderProps) {
           </div>
         </div>
       </header>
-
-      {/* Dynamic Carrier Role & Permissions Drawer */}
-      <VendorRolePermissionsDrawer
-        isOpen={permissionsDrawerOpen}
-        onClose={() => setPermissionsDrawerOpen(false)}
-        currentUser={currentUser}
-        vendorCompany={activeCompany}
-      />
     </>
   );
 }

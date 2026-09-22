@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
 import PageHeader from "../components/PageHeader";
+import { ADMIN_SIDEBAR_MODULES } from "@/lib/adminPermissionsDef";
+import ModuleActionPermissionSelector from "@/components/permissions/ModuleActionPermissionSelector";
 import {
   Shield,
   RefreshCw,
@@ -75,9 +77,14 @@ export default function AdminRolesPage() {
         fetchApi<{ roles: GenericRoleItem[] }>("/admin/roles"),
       ]);
 
-      setAdminRoles(adminRes.roles || []);
+      const rawAdminRoles = adminRes.roles || [];
+      const uniqueAdminRoles = Array.from(new Map(rawAdminRoles.map((r: any) => [r.id, r])).values());
+      const rawSysRoles = sysRes.roles || [];
+      const uniqueSysRoles = Array.from(new Map(rawSysRoles.map((r: any) => [r.id, r])).values());
+
+      setAdminRoles(uniqueAdminRoles);
       setPermissionsList(adminRes.permissionsList || []);
-      setSystemRoles(sysRes.roles || []);
+      setSystemRoles(uniqueSysRoles);
     } catch (err: any) {
       setError(err.message || "Failed to load roles and permissions");
     } finally {
@@ -394,7 +401,7 @@ export default function AdminRolesPage() {
       {/* Create Custom Role Modal */}
       {createModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="max-w-xl w-full bg-[#EEF2F6] rounded-3xl p-6 sm:p-8 shadow-neu-raised border border-white/90 my-8">
+          <div className="max-w-5xl w-full max-h-[92vh] overflow-y-auto bg-[#EEF2F6] rounded-3xl p-6 sm:p-8 shadow-neu-raised border border-white/90 my-8">
             <div className="flex items-center justify-between pb-4 border-b border-[#D9E2EC]/70">
               <div className="flex items-center gap-2.5">
                 <div className="h-9 w-9 rounded-xl bg-blue-100 text-[#2563EB] flex items-center justify-center shadow-neu-raised-sm">
@@ -459,69 +466,66 @@ export default function AdminRolesPage() {
                 />
               </div>
 
-              {/* Checkboxes */}
+              {/* Two-Column Module Action Permission Selector */}
               <div className="space-y-2 pt-2">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
                   <label className="text-xs font-semibold text-[#1E293B]">
                     Assigned Capability Grants ({newRoleData.permissions.length} selected)
                   </label>
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() =>
-                        setNewRoleData({
-                          ...newRoleData,
-                          permissions: permissionsList.map((p) => p.id),
-                        })
-                      }
-                      className="text-[10px] text-[#2563EB] hover:underline font-semibold"
+                      onClick={() => {
+                        const allKeys = ADMIN_SIDEBAR_MODULES.flatMap((m) => m.actions.map((a) => a.key));
+                        setNewRoleData((prev) => ({ ...prev, permissions: allKeys }));
+                      }}
+                      className="text-[10px] text-[#2563EB] hover:underline font-semibold cursor-pointer"
                     >
                       Select All
                     </button>
+                    <span className="text-slate-300">|</span>
                     <button
                       type="button"
-                      onClick={() => setNewRoleData({ ...newRoleData, permissions: [] })}
-                      className="text-[10px] text-[#64748B] hover:underline"
+                      onClick={() => setNewRoleData((prev) => ({ ...prev, permissions: [] }))}
+                      className="text-[10px] text-[#64748B] hover:underline cursor-pointer"
                     >
-                      Clear
+                      Clear All
                     </button>
                   </div>
                 </div>
 
-                <div className="max-h-48 overflow-y-auto p-3 rounded-2xl bg-[#EEF2F6] shadow-neu-inset space-y-2 border border-white/60">
-                  {permissionsList.map((p) => {
-                    const checked = newRoleData.permissions.includes(p.id);
-                    return (
-                      <label
-                        key={p.id}
-                        className="flex items-start gap-2 text-xs text-[#1E293B] hover:bg-white/40 p-1 rounded-lg cursor-pointer transition"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewRoleData({
-                                ...newRoleData,
-                                permissions: [...newRoleData.permissions, p.id],
-                              });
-                            } else {
-                              setNewRoleData({
-                                ...newRoleData,
-                                permissions: newRoleData.permissions.filter((x) => x !== p.id),
-                              });
-                            }
-                          }}
-                          className="mt-0.5 rounded text-[#2563EB] cursor-pointer"
-                        />
-                        <div className="min-w-0">
-                          <p className="font-semibold text-xs leading-tight">{p.name}</p>
-                          <p className="text-[10px] text-[#64748B] leading-tight">{p.description}</p>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
+                <ModuleActionPermissionSelector
+                  modules={ADMIN_SIDEBAR_MODULES}
+                  mode="role"
+                  selectedPermissions={newRoleData.permissions}
+                  onTogglePermission={(key, nextChecked) => {
+                    setNewRoleData((prev) => ({
+                      ...prev,
+                      permissions: nextChecked
+                        ? [...prev.permissions.filter((p) => p !== key), key]
+                        : prev.permissions.filter((p) => p !== key),
+                    }));
+                  }}
+                  onSelectAllModule={(moduleId) => {
+                    const mod = ADMIN_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = mod.actions.map((a) => a.key);
+                    setNewRoleData((prev) => ({
+                      ...prev,
+                      permissions: Array.from(new Set([...prev.permissions, ...modKeys])),
+                    }));
+                  }}
+                  onClearModule={(moduleId) => {
+                    const mod = ADMIN_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = new Set(mod.actions.map((a) => a.key));
+                    setNewRoleData((prev) => ({
+                      ...prev,
+                      permissions: prev.permissions.filter((k) => !modKeys.has(k)),
+                    }));
+                  }}
+                  compact={true}
+                />
               </div>
 
               <div className="pt-3 flex items-center justify-end gap-2.5">

@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { fetchApi } from "@/lib/api";
 import PageHeader from "@/app/admin/components/PageHeader";
 import StatusBadge from "@/app/admin/components/StatusBadge";
+import { hasPermissionKey } from "@/lib/vendorPermissionsDef";
 import {
   FileText,
   Search,
@@ -156,6 +157,32 @@ export default function VendorQuotationsPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [quoteSourceMode, setQuoteSourceMode] = useState<"direct" | "request">("direct");
   const [selectedRequestId, setSelectedRequestId] = useState<string>("");
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const userStr = localStorage.getItem("auth_user");
+      if (userStr) {
+        try {
+          setCurrentUser(JSON.parse(userStr));
+        } catch {}
+      }
+    }
+    fetchApi<{ user: any }>("/auth/me")
+      .then((res) => {
+        if (res?.user) setCurrentUser(res.user);
+      })
+      .catch(() => {});
+  }, []);
+
+  const isOwner = currentUser?.role === "vendor" || currentUser?.role === "admin";
+  const userPerms = useMemo(() => {
+    return Array.isArray(currentUser?.permissions) ? currentUser.permissions : [];
+  }, [currentUser]);
+
+  const canCreateQuote = isOwner || hasPermissionKey(userPerms, "quotations:create");
+  const canEditQuote = isOwner || hasPermissionKey(userPerms, "quotations:edit");
+  const canCancelQuote = isOwner || hasPermissionKey(userPerms, "quotations:cancel");
 
   // Direct Customer / Move details
   const [directCustomerName, setDirectCustomerName] = useState("");
@@ -386,6 +413,14 @@ export default function VendorQuotationsPage() {
   };
 
   const handleOpenCreateQuoteModal = (req?: MovingRequest) => {
+    if (!canCreateQuote) {
+      setFeedbackBanner({
+        type: "error",
+        text: "You do not have authorization to create or submit price quotations.",
+      });
+      return;
+    }
+
     if (req) {
       setQuoteSourceMode("request");
       setQuoteTargetRequest(req);
@@ -420,6 +455,14 @@ export default function VendorQuotationsPage() {
 
   const handleSubmitQuote = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!canCreateQuote) {
+      setFeedbackBanner({
+        type: "error",
+        text: "You do not have authorization to submit price quotations.",
+      });
+      return;
+    }
 
     if (grandTotalRupees <= 0) {
       setFeedbackBanner({ type: "error", text: "Please enter valid split charges. Total quotation amount must be greater than ₹0." });
@@ -650,13 +693,15 @@ export default function VendorQuotationsPage() {
             <RefreshCw size={13} className={loadingAvailable || loadingQuotes ? "animate-spin text-blue-600" : ""} />
             <span>Sync Activity</span>
           </button>
-          <button
-            onClick={() => handleOpenCreateQuoteModal()}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-xs transition cursor-pointer"
-          >
-            <Plus size={14} />
-            <span>Create Quotation</span>
-          </button>
+          {canCreateQuote && (
+            <button
+              onClick={() => handleOpenCreateQuoteModal()}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-xs transition cursor-pointer"
+            >
+              <Plus size={14} />
+              <span>Create Quotation</span>
+            </button>
+          )}
         </div>
       </PageHeader>
 
@@ -864,7 +909,7 @@ export default function VendorQuotationsPage() {
                         <CheckCircle2 size={13} />
                         <span>Quoted</span>
                       </button>
-                    ) : (
+                    ) : canCreateQuote ? (
                       <button
                         onClick={() => handleOpenSubmitModal(req)}
                         className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition flex items-center gap-1.5 cursor-pointer"
@@ -872,7 +917,7 @@ export default function VendorQuotationsPage() {
                         <Plus size={13} />
                         <span>Submit Quote</span>
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -921,13 +966,15 @@ export default function VendorQuotationsPage() {
                 ))}
               </div>
 
-              <button
-                onClick={() => handleOpenCreateQuoteModal()}
-                className="px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition flex items-center gap-1.5 shrink-0 ml-1 cursor-pointer"
-              >
-                <Plus size={13} />
-                <span>New Quote</span>
-              </button>
+              {canCreateQuote && (
+                <button
+                  onClick={() => handleOpenCreateQuoteModal()}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition flex items-center gap-1.5 shrink-0 ml-1 cursor-pointer"
+                >
+                  <Plus size={13} />
+                  <span>New Quote</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -947,13 +994,15 @@ export default function VendorQuotationsPage() {
                 Create direct customer quotations or explore open marketplace requests to dispatch proposals.
               </p>
               <div className="flex flex-wrap items-center justify-center gap-3">
-                <button
-                  onClick={() => handleOpenCreateQuoteModal()}
-                  className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus size={14} />
-                  <span>Create Quotation</span>
-                </button>
+                {canCreateQuote && (
+                  <button
+                    onClick={() => handleOpenCreateQuoteModal()}
+                    className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold shadow-xs hover:bg-blue-700 transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus size={14} />
+                    <span>Create Quotation</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setActiveTab("available")}
                   className="px-4 py-2.5 rounded-xl bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"

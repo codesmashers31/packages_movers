@@ -6,13 +6,18 @@ import Link from "next/link";
 import { fetchApi } from "@/lib/api";
 import VendorSidebar, { ROUTE_PERMISSION_MAP } from "./components/VendorSidebar";
 import VendorHeader from "./components/VendorHeader";
-import { Loader2, ShieldAlert, ArrowLeft } from "lucide-react";
+import { Loader2, ShieldAlert, ArrowLeft, Building2, Lock } from "lucide-react";
 
 export default function VendorLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [vendorStatus, setVendorStatus] = useState<string>("APPROVED");
+  const [verificationAccess, setVerificationAccess] = useState<string>("ALLOWED");
+  const [verificationStatus, setVerificationStatus] = useState<string>("APPROVED");
+  const [blockingItem, setBlockingItem] = useState<string | null>(null);
+  const [reviewReason, setReviewReason] = useState<string | null>(null);
   const isLoginPage = Boolean(
     pathname === "/vendor/login" ||
     pathname?.startsWith("/vendor/login/") ||
@@ -35,7 +40,8 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
       setCheckingAuth(false);
     }, 600);
 
-    if (typeof window !== "undefined") {
+    const verifyVendorAuthorization = () => {
+      if (typeof window === "undefined") return;
       const token = localStorage.getItem("auth_token");
       const userStr = localStorage.getItem("auth_user");
 
@@ -58,7 +64,7 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
         }
         setCurrentUser(user);
 
-        // Proactively refresh profile with dynamic permissions in background
+        // Proactively refresh profile with dynamic permissions and verification gate in background
         fetchApi<{ user: any }>("/auth/me")
           .then((res) => {
             if (res?.user) {
@@ -67,7 +73,26 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
               if (u.vendorId) {
                 localStorage.setItem("active_vendor_id", String(u.vendorId));
               }
-              
+
+              if (u.companyVerificationAccess) {
+                setVerificationAccess(u.companyVerificationAccess);
+                localStorage.setItem("active_vendor_verification_access", u.companyVerificationAccess);
+              }
+              if (u.companyVerificationStatus) {
+                setVerificationStatus(u.companyVerificationStatus);
+                localStorage.setItem("active_vendor_verification_status", u.companyVerificationStatus);
+              }
+              if (u.vendorStatus) {
+                setVendorStatus(u.vendorStatus);
+                localStorage.setItem("active_vendor_status", u.vendorStatus);
+              }
+              if (u.companyVerification?.blockingItem) {
+                setBlockingItem(u.companyVerification.blockingItem);
+              }
+              if (u.companyVerification?.reason) {
+                setReviewReason(u.companyVerification.reason);
+              }
+
               if (!merged.permissions || merged.permissions.length === 0) {
                 // Secondary fallback lookup in /vendor/roles
                 fetchApi<{ roles: any[] }>("/vendor/roles")
@@ -106,18 +131,96 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
 
       clearTimeout(safetyTimer);
       setCheckingAuth(false);
-    }
 
-    return () => clearTimeout(safetyTimer);
+      const storedStatus = localStorage.getItem("active_vendor_status");
+      if (storedStatus) setVendorStatus(storedStatus);
+
+      const storedAccess = localStorage.getItem("active_vendor_verification_access");
+      if (storedAccess) setVerificationAccess(storedAccess);
+
+      const storedVerStatus = localStorage.getItem("active_vendor_verification_status");
+      if (storedVerStatus) setVerificationStatus(storedVerStatus);
+
+      const storedBlocking = localStorage.getItem("active_vendor_blocking_item");
+      if (storedBlocking) setBlockingItem(storedBlocking);
+
+      const storedReason = localStorage.getItem("active_vendor_review_reason");
+      if (storedReason) setReviewReason(storedReason);
+
+      fetchApi<{ vendor?: any }>("/vendor/profile")
+        .then((vRes) => {
+          if (vRes?.vendor) {
+            if (vRes.vendor.status) {
+              setVendorStatus(vRes.vendor.status);
+              localStorage.setItem("active_vendor_status", vRes.vendor.status);
+            }
+            if (vRes.vendor.verificationAccess) {
+              setVerificationAccess(vRes.vendor.verificationAccess);
+              localStorage.setItem("active_vendor_verification_access", vRes.vendor.verificationAccess);
+            }
+            if (vRes.vendor.verificationStatus) {
+              setVerificationStatus(vRes.vendor.verificationStatus);
+              localStorage.setItem("active_vendor_verification_status", vRes.vendor.verificationStatus);
+            }
+            if (vRes.vendor.blockingItem) {
+              setBlockingItem(vRes.vendor.blockingItem);
+            }
+            if (vRes.vendor.verificationReason) {
+              setReviewReason(vRes.vendor.verificationReason);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+
+    verifyVendorAuthorization();
+
+    const onPermissionsUpdated = () => {
+      verifyVendorAuthorization();
+    };
+
+    window.addEventListener("focus", onPermissionsUpdated);
+    window.addEventListener("vendor-permissions-updated", onPermissionsUpdated);
+    window.addEventListener("vendor-status-updated", onPermissionsUpdated);
+    window.addEventListener("permissions-updated", onPermissionsUpdated);
+
+    return () => {
+      clearTimeout(safetyTimer);
+      window.removeEventListener("focus", onPermissionsUpdated);
+      window.removeEventListener("vendor-permissions-updated", onPermissionsUpdated);
+      window.removeEventListener("vendor-status-updated", onPermissionsUpdated);
+      window.removeEventListener("permissions-updated", onPermissionsUpdated);
+    };
   }, [pathname, isLoginPage, router]);
+
+  const isRemediationOrDashboardRoute = useMemo(() => {
+    return (
+      pathname === "/vendor" ||
+      pathname === "/vendor/company-profile" ||
+      pathname?.startsWith("/vendor/company-profile/") ||
+      pathname === "/vendor/profile" ||
+      pathname === "/vendor/documents" ||
+      pathname === "/vendor/my-permissions"
+    );
+  }, [pathname]);
+
+  const isVerificationLocked = useMemo(() => {
+    if (isLoginPage || !currentUser) return false;
+    if (currentUser.role === "admin") return false;
+    // Direct navigation to operational subpages (e.g. /vendor/bookings) is blocked when verification is restricted
+    if ((vendorStatus !== "APPROVED" || verificationAccess === "RESTRICTED") && !isRemediationOrDashboardRoute) {
+      return true;
+    }
+    return false;
+  }, [isLoginPage, currentUser, vendorStatus, verificationAccess, isRemediationOrDashboardRoute]);
 
   // Dynamic route authorization guard for non-admin employees based on permissions
   const isAuthorizedRoute = useMemo(() => {
     if (isLoginPage || !currentUser) return true;
     if (currentUser.role === "vendor" || currentUser.role === "admin") return true;
 
-    // Overview dashboard always permitted for authenticated staff
-    if (pathname === "/vendor") return true;
+    // Overview dashboard, personal capability inspector & personal profile always permitted for all authenticated staff
+    if (pathname === "/vendor" || pathname === "/vendor/my-permissions" || pathname === "/vendor/profile") return true;
 
     const userPerms: string[] = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
 
@@ -129,9 +232,9 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
     if (ROUTE_PERMISSION_MAP[pathname]) {
       matchingRoute = pathname;
     } else {
-      // Find most specific matching route prefix, excluding base "/vendor"
+      // Find most specific matching route prefix, excluding base "/vendor", "/vendor/my-permissions", and "/vendor/profile"
       const subRoutes = Object.keys(ROUTE_PERMISSION_MAP)
-        .filter((r) => r !== "/vendor")
+        .filter((r) => r !== "/vendor" && r !== "/vendor/my-permissions" && r !== "/vendor/profile")
         .sort((a, b) => b.length - a.length);
       matchingRoute = subRoutes.find((r) => pathname.startsWith(r + "/"));
     }
@@ -144,24 +247,34 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
       return false;
     }
 
+    // Always allow personal permissions inspector and personal profile
+    if (matchingRoute === "/vendor/my-permissions" || matchingRoute === "/vendor/profile") {
+      return true;
+    }
+
     const required = ROUTE_PERMISSION_MAP[matchingRoute];
+    // If only wildcard is required and it's an open route
+    if (required && required.length === 1 && required[0] === "*") {
+      return true;
+    }
+
     if (userPerms.length > 0) {
-      return Boolean(required && required.some((perm) => userPerms.includes(perm)));
+      return Boolean(required && required.some((perm) => perm !== "*" && userPerms.includes(perm)));
     }
 
     // Role-based fallback for unconfigured accounts (strictly matching role key, NO broad .includes('manager')!)
     const empR = (currentUser.employeeRole || "worker").toLowerCase().trim();
     if (empR === "manager") return true;
 
-    let allowed: string[] = ["/vendor"];
+    let allowed: string[] = ["/vendor", "/vendor/my-permissions", "/vendor/profile"];
     if (empR === "hr") {
-      allowed = ["/vendor", "/vendor/employees", "/vendor/roles", "/vendor/permissions", "/vendor/audit-logs", "/vendor/reports"];
+      allowed = ["/vendor", "/vendor/my-permissions", "/vendor/profile", "/vendor/employees", "/vendor/roles", "/vendor/permissions", "/vendor/audit-logs", "/vendor/reports"];
     } else if (empR === "lead_estimator" || empR.includes("estimate") || empR.includes("quote")) {
-      allowed = ["/vendor", "/vendor/demand", "/vendor/quotations"];
+      allowed = ["/vendor", "/vendor/my-permissions", "/vendor/profile", "/vendor/demand", "/vendor/quotations"];
     } else if (empR === "fleet_supervisor" || empR.includes("fleet") || empR.includes("transport")) {
-      allowed = ["/vendor", "/vendor/bookings", "/vendor/tracking", "/vendor/workers", "/vendor/vehicles"];
+      allowed = ["/vendor", "/vendor/my-permissions", "/vendor/profile", "/vendor/bookings", "/vendor/tracking", "/vendor/workers", "/vendor/vehicles"];
     } else {
-      allowed = ["/vendor", "/vendor/bookings", "/vendor/vehicles"];
+      allowed = ["/vendor", "/vendor/my-permissions", "/vendor/profile", "/vendor/bookings", "/vendor/vehicles"];
     }
 
     return allowed.some((p) => pathname === p || (p !== "/vendor" && pathname.startsWith(p + "/")));
@@ -217,8 +330,82 @@ export default function VendorLayout({ children }: { children: ReactNode }) {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
         <VendorHeader onMenuToggle={() => setMobileMenuOpen(true)} />
+        {!isLoginPage && (vendorStatus !== "APPROVED" || verificationAccess === "RESTRICTED") && (
+          <div
+            className={`px-4 py-2 text-xs font-medium border-b flex items-center justify-between ${
+              vendorStatus === "SUSPENDED" || verificationStatus === "SUSPENDED"
+                ? "bg-rose-50 border-rose-200 text-rose-800"
+                : vendorStatus === "CHANGES_REQUESTED" || verificationStatus === "CHANGES_REQUESTED"
+                ? "bg-amber-50 border-amber-200 text-amber-800"
+                : "bg-blue-50 border-blue-200 text-blue-800"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Lock size={14} className="shrink-0" />
+              <span>
+                Company Verification: <strong>{(verificationStatus || vendorStatus).replace("_", " ")}</strong>
+                {blockingItem ? ` (Blocking: ${blockingItem})` : ""} — Operational features unlock upon administrative approval.
+              </span>
+            </div>
+            <Link href="/vendor/company-profile" className="underline font-semibold hover:opacity-80">
+              View Profile & Documents
+            </Link>
+          </div>
+        )}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {isAuthorizedRoute ? (
+          {isVerificationLocked ? (
+            <div className="p-8 sm:p-12 max-w-lg mx-auto text-center space-y-5 bg-white rounded-3xl shadow-sm border border-slate-200/80 my-12 animate-scaleUp">
+              <div
+                className={`h-14 w-14 rounded-2xl mx-auto flex items-center justify-center border ${
+                  vendorStatus === "SUSPENDED" || verificationStatus === "SUSPENDED"
+                    ? "bg-rose-50 text-rose-600 border-rose-200"
+                    : vendorStatus === "CHANGES_REQUESTED" || verificationStatus === "CHANGES_REQUESTED"
+                    ? "bg-amber-50 text-amber-600 border-amber-200"
+                    : "bg-blue-50 text-blue-600 border-blue-200"
+                }`}
+              >
+                <Lock size={26} />
+              </div>
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider mb-2 border bg-slate-50 text-slate-700 border-slate-200">
+                  {(verificationStatus || vendorStatus).replace("_", " ")}
+                </div>
+                <h3 className="text-lg font-bold text-slate-900">
+                  {vendorStatus === "SUSPENDED" || verificationStatus === "SUSPENDED"
+                    ? "Carrier Account Suspended"
+                    : vendorStatus === "CHANGES_REQUESTED" || verificationStatus === "CHANGES_REQUESTED"
+                    ? "Compliance Revisions Requested"
+                    : vendorStatus === "REJECTED" || verificationStatus === "REJECTED"
+                    ? "Carrier Application Rejected"
+                    : "Verification Required"}
+                </h3>
+                <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                  {vendorStatus === "SUSPENDED"
+                    ? "This carrier company account has been suspended by platform administration. Operational modules are disabled."
+                    : "Operational modules (quotations, dispatch, live tracking, crew dispatch, and marketplace catalog) are locked until all 6 compliance documents are reviewed and approved by platform administrators."}
+                </p>
+                {blockingItem && (
+                  <p className="text-xs font-bold text-rose-600 mt-2">
+                    Action Required: {blockingItem}
+                  </p>
+                )}
+                {reviewReason && (
+                  <p className="text-xs italic text-slate-600 mt-1">
+                    "{reviewReason}"
+                  </p>
+                )}
+              </div>
+              <div className="pt-2 flex justify-center gap-3">
+                <Link
+                  href="/vendor/company-profile"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition"
+                >
+                  <Building2 size={15} />
+                  <span>Go to Company Profile & Verification</span>
+                </Link>
+              </div>
+            </div>
+          ) : isAuthorizedRoute ? (
             children
           ) : (
             <div className="p-8 sm:p-12 max-w-md mx-auto text-center space-y-4 bg-white rounded-3xl shadow-sm border border-slate-200/80 my-12 animate-scaleUp">

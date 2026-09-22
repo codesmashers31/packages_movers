@@ -35,93 +35,43 @@ interface RoleDef {
   name: string;
   purpose: string;
   accessLevel: string;
+  responsibleFor?: string[];
+  canAccess?: string[];
+  canPerform?: string[];
+  cannotAccess?: string[];
   permissions: string[];
   status: "Active" | "Inactive";
   isCustom?: boolean;
   isSystemRoot?: boolean;
+  assignedStaffCount?: number;
   createdAt?: string;
 }
 
-interface PermissionItem {
-  id: string;
-  description: string;
-}
+const getRoleResponsibilities = (role: RoleDef): string[] => {
+  if (role.responsibleFor && role.responsibleFor.length > 0) return role.responsibleFor;
+  return role.permissions.slice(0, 4);
+};
 
-interface PermissionDomain {
-  domain: string;
-  icon: string;
-  permissions: PermissionItem[];
-}
+const getRoleCanAccess = (role: RoleDef): string[] => {
+  if (role.canAccess && role.canAccess.length > 0) return role.canAccess;
+  return ["Assigned moves & dispatches", "Assigned team members", "Fleet vehicles"];
+};
 
-// Fallback permission domains in case backend response needs client fallback
-const DEFAULT_PERMISSION_DOMAINS: PermissionDomain[] = [
-  {
-    domain: "Staff & Crew Management",
-    icon: "Users",
-    permissions: [
-      { id: "Manage Employees & Crew", description: "Add, edit, and manage staff accounts and active status" },
-      { id: "Assign Available Workers & Crew", description: "Assign drivers, supervisors, and movers to confirmed moves" },
-      { id: "View Crew Attendance & Performance", description: "View completed moves, customer feedback, and job history" },
-    ],
-  },
-  {
-    domain: "Trucks & Fleet",
-    icon: "Truck",
-    permissions: [
-      { id: "Fleet & Vehicle Operations", description: "Register trucks and manage RC, fitness, and insurance records" },
-      { id: "Assign Transport Trucks to Moves", description: "Assign moving trucks and carriers to customer moves" },
-      { id: "Vehicle Inspection & Maintenance Tracking", description: "Record pre-trip truck inspections and mileage checkups" },
-    ],
-  },
-  {
-    domain: "Bookings & Moving Jobs",
-    icon: "Package",
-    permissions: [
-      { id: "View & Dispatch Bookings", description: "View confirmed moves, customer addresses, and job schedules" },
-      { id: "Update Move Progression Milestones", description: "Update move status: on the way, packing, in transit, delivered" },
-      { id: "Enter Recipient Delivery Verification Code", description: "Enter customer delivery OTP to complete and verify dropoff" },
-    ],
-  },
-  {
-    domain: "Quotes & Customer Leads",
-    icon: "Calculator",
-    permissions: [
-      { id: "Review Available Customer Leads", description: "View new customer moving requests in your service areas" },
-      { id: "Create & Submit Formal Quotations", description: "Create price estimates with truck type and crew count" },
-      { id: "Quotation Performance & Insights", description: "See accepted and rejected quotes and conversion stats" },
-    ],
-  },
-  {
-    domain: "Services & Service Areas",
-    icon: "Layers",
-    permissions: [
-      { id: "Service Catalog Configuration", description: "Manage moving packages (home, office, vehicle) and pricing" },
-      { id: "Custom Specialized Services", description: "Add specialized add-on services (e.g. piano moving, storage)" },
-      { id: "Coverage Areas Configuration", description: "Choose which cities and pin code areas your company serves" },
-    ],
-  },
-  {
-    domain: "Business Documents & Verification",
-    icon: "ShieldCheck",
-    permissions: [
-      { id: "Document Submissions", description: "Upload GST, business licenses, and company insurance files" },
-      { id: "Regulatory Status Monitoring", description: "Check admin verification and approval status of documents" },
-    ],
-  },
-  {
-    domain: "Reports & Customer Support",
-    icon: "BarChart3",
-    permissions: [
-      { id: "Reports & Performance Analytics", description: "View revenue earnings, booking counts, and business trends" },
-      { id: "Operational Audit Logs", description: "See activity logs of changes made by your team members" },
-      { id: "Customer Support Coordination", description: "Reply to customer messages and help resolve move issues" },
-    ],
-  },
-];
+const getRoleCanPerform = (role: RoleDef): string[] => {
+  if (role.canPerform && role.canPerform.length > 0) return role.canPerform;
+  return ["Update assigned job status", "Contact assigned crew", "Record operational logs"];
+};
+
+const getRoleCannotAccess = (role: RoleDef): string[] => {
+  if (role.cannotAccess && role.cannotAccess.length > 0) return role.cannotAccess;
+  return ["Company financial accounts", "Vendor KYC and regulatory documents"];
+};
+
+import { VENDOR_SIDEBAR_MODULES } from "@/lib/vendorPermissionsDef";
+import ModuleActionPermissionSelector from "@/components/permissions/ModuleActionPermissionSelector";
 
 export default function VendorRolesPage() {
   const [roles, setRoles] = useState<RoleDef[]>([]);
-  const [permissionDomains, setPermissionDomains] = useState<PermissionDomain[]>(DEFAULT_PERMISSION_DOMAINS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -154,19 +104,42 @@ export default function VendorRolesPage() {
 
   // Delete Role state
   const [deletingRole, setDeletingRole] = useState<RoleDef | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const userStr = localStorage.getItem("auth_user");
+      if (userStr) {
+        try {
+          setCurrentUser(JSON.parse(userStr));
+        } catch {}
+      }
+    }
+    fetchApi<{ user: any }>("/auth/me")
+      .then((res) => {
+        if (res?.user) setCurrentUser(res.user);
+      })
+      .catch(() => {});
+  }, []);
+
+  const canManageRoles = useMemo(() => {
+    if (!currentUser) return false;
+    if (currentUser.role === "vendor" || currentUser.role === "admin") return true;
+    const perms = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
+    return perms.includes("*") || perms.includes("roles:manage") || perms.includes("Manage Company Roles");
+  }, [currentUser]);
 
   const fetchRoles = async () => {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetchApi<{ roles: RoleDef[]; permissionDomains?: PermissionDomain[] }>(
+      const res = await fetchApi<{ roles: RoleDef[] }>(
         `/vendor/roles?_t=${Date.now()}`,
         { cache: "no-store" }
       );
-      setRoles(res.roles || []);
-      if (res.permissionDomains && res.permissionDomains.length > 0) {
-        setPermissionDomains(res.permissionDomains);
-      }
+      const rawRoles = res.roles || [];
+      const uniqueRoles = Array.from(new Map(rawRoles.map((r: any) => [r.id, r])).values());
+      setRoles(uniqueRoles);
     } catch (err: any) {
       setError(err.message || "Failed to load vendor roles");
     } finally {
@@ -177,45 +150,6 @@ export default function VendorRolesPage() {
   useEffect(() => {
     fetchRoles();
   }, []);
-
-  const handleTogglePermission = (permId: string, formType: "add" | "edit") => {
-    if (formType === "add") {
-      setAddForm((prev) => ({
-        ...prev,
-        permissions: prev.permissions.includes(permId)
-          ? prev.permissions.filter((p) => p !== permId)
-          : [...prev.permissions, permId],
-      }));
-    } else {
-      setEditForm((prev) => ({
-        ...prev,
-        permissions: prev.permissions.includes(permId)
-          ? prev.permissions.filter((p) => p !== permId)
-          : [...prev.permissions, permId],
-      }));
-    }
-  };
-
-  const handleToggleDomain = (domainPerms: PermissionItem[], formType: "add" | "edit") => {
-    const domainIds = domainPerms.map((p) => p.id);
-    const targetPerms = formType === "add" ? addForm.permissions : editForm.permissions;
-    const allSelected = domainIds.every((id) => targetPerms.includes(id));
-
-    if (allSelected) {
-      if (formType === "add") {
-        setAddForm((prev) => ({ ...prev, permissions: prev.permissions.filter((id) => !domainIds.includes(id)) }));
-      } else {
-        setEditForm((prev) => ({ ...prev, permissions: prev.permissions.filter((id) => !domainIds.includes(id)) }));
-      }
-    } else {
-      const toAdd = domainIds.filter((id) => !targetPerms.includes(id));
-      if (formType === "add") {
-        setAddForm((prev) => ({ ...prev, permissions: [...prev.permissions, ...toAdd] }));
-      } else {
-        setEditForm((prev) => ({ ...prev, permissions: [...prev.permissions, ...toAdd] }));
-      }
-    }
-  };
 
   // Submit Add Role
   const handleCreateRole = async (e: React.FormEvent) => {
@@ -353,21 +287,25 @@ export default function VendorRolesPage() {
         description="Create roles for your team and choose exactly what each staff member can view and do."
       >
         <div className="flex flex-wrap items-center gap-2.5">
-          <Link
-            href="/vendor/permissions"
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold text-blue-600 hover:text-blue-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
-          >
-            <KeyRound size={14} className="text-blue-600" />
-            <span>Permissions Guide</span>
-          </Link>
+          {canManageRoles && (
+            <Link
+              href="/vendor/permissions"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold text-blue-600 hover:text-blue-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
+            >
+              <KeyRound size={14} className="text-blue-600" />
+              <span>Permissions Guide</span>
+            </Link>
+          )}
 
-          <button
-            onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
-          >
-            <Plus size={15} />
-            <span>Add New Role</span>
-          </button>
+          {canManageRoles && (
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
+            >
+              <Plus size={15} />
+              <span>Add New Role</span>
+            </button>
+          )}
 
           <button
             onClick={fetchRoles}
@@ -508,114 +446,143 @@ export default function VendorRolesPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredRoles.map((role) => (
-            <div
-              key={role.id}
-              className={`bg-white rounded-2xl border border-slate-200/80 shadow-xs hover:border-slate-300 hover:shadow-sm p-6 flex flex-col justify-between space-y-5 transition relative ${
-                role.isCustom ? "border-l-4 border-l-purple-500" : "border-l-4 border-l-blue-500"
-              }`}
-            >
-              <div className="space-y-4">
-                {/* Top header */}
-                <div className="flex items-start justify-between border-b border-slate-100 pb-3.5 gap-2">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border ${
-                        role.isCustom
-                          ? "bg-purple-50 text-purple-600 border-purple-200/70"
-                          : "bg-blue-50 text-blue-600 border-blue-200/60"
-                      }`}
-                    >
-                      {role.isCustom ? <Sparkles size={20} /> : <Shield size={20} />}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
+          {filteredRoles.map((role) => {
+            const responsibilities = getRoleResponsibilities(role);
+            const canAccess = getRoleCanAccess(role);
+            const canPerform = getRoleCanPerform(role);
+            const cannotAccess = getRoleCannotAccess(role);
+            const staffCount = role.assignedStaffCount ?? 0;
+
+            return (
+              <div
+                key={role.id}
+                className={`bg-white rounded-3xl border border-slate-200/80 shadow-xs hover:shadow-sm p-6 flex flex-col justify-between space-y-5 transition relative ${
+                  role.isCustom ? "border-t-4 border-t-purple-500" : "border-t-4 border-t-blue-600"
+                }`}
+              >
+                <div className="space-y-4">
+                  {/* Container Header */}
+                  <div className="flex items-start justify-between border-b border-slate-100 pb-3.5 gap-2">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`h-11 w-11 rounded-2xl flex items-center justify-center shrink-0 border ${
+                          role.isCustom
+                            ? "bg-purple-50 text-purple-600 border-purple-200/70"
+                            : "bg-blue-50 text-blue-600 border-blue-200/60"
+                        }`}
+                      >
+                        {role.isCustom ? <Sparkles size={20} /> : <Shield size={20} />}
+                      </div>
+                      <div>
                         <h3 className="text-sm font-bold text-slate-900">{role.name}</h3>
+                        <p className="text-[11px] text-blue-600 font-semibold mt-0.5">{role.accessLevel}</p>
                       </div>
-                      <p className="text-[11px] text-blue-600 font-semibold mt-0.5">{role.accessLevel}</p>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                          role.status === "Active"
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            : "bg-slate-100 text-slate-700 border-slate-200"
+                        }`}
+                      >
+                        {role.status}
+                      </span>
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                        {role.isCustom ? "Custom" : "Standard"}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-                        role.status === "Active"
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : "bg-slate-100 text-slate-700 border-slate-200"
-                      }`}
-                    >
-                      {role.status}
+                  {/* Purpose Statement */}
+                  <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/60">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                      Operational Purpose
                     </span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
-                        role.isCustom
-                          ? "bg-purple-50 text-purple-700 border border-purple-200"
-                          : "bg-slate-100 text-slate-600 border border-slate-200"
-                      }`}
-                    >
-                      {role.isCustom ? "Custom Role" : "Default Role"}
+                    <p className="text-xs text-slate-700 leading-relaxed">{role.purpose}</p>
+                  </div>
+
+                  {/* Assigned Scope Metrics */}
+                  <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/50 border border-blue-100 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Users size={15} className="text-blue-600" />
+                      <span className="font-semibold text-slate-700">Assigned Staff:</span>
+                    </div>
+                    <span className="font-bold font-mono px-2 py-0.5 rounded bg-blue-100/80 text-blue-800 text-[11px]">
+                      {staffCount} {staffCount === 1 ? "Employee" : "Employees"}
                     </span>
                   </div>
+
+                  {/* Responsible For Bullets */}
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      Core Responsibilities
+                    </span>
+                    <div className="space-y-1">
+                      {responsibilities.slice(0, 3).map((item, idx) => (
+                        <div key={idx} className="flex items-start gap-2 text-xs text-slate-700">
+                          <CheckCircle2 size={13} className="text-emerald-600 shrink-0 mt-0.5" />
+                          <span className="leading-tight">{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Access & Actions Breakdown */}
+                  <div className="grid grid-cols-1 gap-2 pt-1">
+                    <div className="p-2.5 rounded-xl bg-emerald-50/40 border border-emerald-100/80 space-y-1 text-xs">
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase block">Can Access & Perform</span>
+                      <p className="text-[11px] text-emerald-900 leading-tight">
+                        {canPerform.slice(0, 2).join(" • ")}
+                      </p>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-rose-50/40 border border-rose-100/80 space-y-1 text-xs">
+                      <span className="text-[10px] font-bold text-rose-800 uppercase block">Restricted Boundaries</span>
+                      <p className="text-[11px] text-rose-900 leading-tight">
+                        {cannotAccess.slice(0, 2).join(" • ")}
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Purpose */}
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Description</p>
-                  <p className="text-xs text-slate-700 leading-relaxed font-normal">{role.purpose}</p>
-                </div>
+                {/* Bottom Footer Actions */}
+                <div className="pt-3.5 border-t border-slate-100 flex items-center justify-between text-xs">
+                  <Link
+                    href={`/vendor/employees?role=${role.id}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-2xs transition"
+                  >
+                    <Users size={13} />
+                    <span>Assigned Staff ({staffCount}) →</span>
+                  </Link>
 
-                {/* Capabilities list */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      Allowed Permissions ({role.permissions.length})
-                    </p>
-                  </div>
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                    {role.permissions.map((perm, idx) => (
-                      <div key={idx} className="flex items-start gap-2 text-xs text-slate-800 p-1.5 rounded-lg bg-slate-50 border border-slate-100">
-                        <CheckCircle2 size={13} className="text-teal-600 shrink-0 mt-0.5" />
-                        <span className="font-medium text-[11px] leading-tight">{perm}</span>
-                      </div>
-                    ))}
-                  </div>
+                  {role.isCustom && canManageRoles ? (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleOpenEdit(role)}
+                        className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 border border-blue-200/60 transition cursor-pointer"
+                        title="Edit role"
+                      >
+                        <Edit2 size={13} />
+                      </button>
+                      <button
+                        onClick={() => setDeletingRole(role)}
+                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 border border-rose-200/60 transition cursor-pointer"
+                        title="Delete role"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[10px] font-semibold text-slate-400 flex items-center gap-1">
+                      <Shield size={11} className="text-blue-500" /> {role.isCustom ? "Custom Role" : "Standard"}
+                    </span>
+                  )}
                 </div>
               </div>
-
-              {/* Bottom Card Footer */}
-              <div className="pt-3.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-                <div className="flex items-center gap-1.5">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200/60">
-                    {role.isCustom ? "Custom Role" : "Default Role"}
-                  </span>
-                </div>
-
-                {role.isCustom ? (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => handleOpenEdit(role)}
-                      className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 text-[11px] font-semibold border border-blue-200/60 flex items-center gap-1 cursor-pointer transition"
-                      title="Edit role"
-                    >
-                      <Edit2 size={12} />
-                      <span>Edit</span>
-                    </button>
-                    <button
-                      onClick={() => setDeletingRole(role)}
-                      className="px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-[11px] font-semibold border border-rose-200/60 flex items-center gap-1 cursor-pointer transition"
-                      title="Delete role"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ) : (
-                  <span className="text-[10px] font-semibold text-slate-400 flex items-center gap-1">
-                    <Shield size={11} className="text-blue-500" /> Default System Role
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -624,7 +591,7 @@ export default function VendorRolesPage() {
       {/* ========================================================================= */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-fadeIn">
-          <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 sm:p-7 rounded-2xl bg-white shadow-xl border border-slate-200 space-y-6 animate-scaleUp">
+          <div className="max-w-5xl w-full max-h-[92vh] overflow-y-auto p-6 sm:p-7 rounded-2xl bg-white shadow-xl border border-slate-200 space-y-6 animate-scaleUp">
             {/* Modal Header */}
             <div className="flex items-start justify-between pb-4 border-b border-slate-100">
               <div>
@@ -657,7 +624,7 @@ export default function VendorRolesPage() {
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Quotation Specialist, Shift Supervisor, Driver"
+                    placeholder="e.g. Quotation Coordinator, Inventory Clerk"
                     value={addForm.name}
                     onChange={(e) => {
                       const nameVal = e.target.value;
@@ -738,23 +705,23 @@ export default function VendorRolesPage() {
                 />
               </div>
 
-              {/* Permissions Section */}
+              {/* Permissions Section: Two-Column Module Action Selector */}
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <div>
                     <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                      Permissions — What can this role do? ({addForm.permissions.length} selected)
+                      Role Permissions Matrix ({addForm.permissions.length} selected)
                     </h4>
                     <p className="text-[11px] text-slate-500">
-                      Check the boxes for each feature or task this role is allowed to access.
+                      Select modules and toggle actions permitted for staff assigned to this role.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
-                        const allIds = permissionDomains.flatMap((d) => d.permissions.map((p) => p.id));
-                        setAddForm({ ...addForm, permissions: allIds });
+                        const allKeys = VENDOR_SIDEBAR_MODULES.flatMap((m) => m.actions.map((a) => a.key));
+                        setAddForm((prev) => ({ ...prev, permissions: allKeys }));
                       }}
                       className="text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer"
                     >
@@ -763,7 +730,7 @@ export default function VendorRolesPage() {
                     <span className="text-slate-300">|</span>
                     <button
                       type="button"
-                      onClick={() => setAddForm({ ...addForm, permissions: [] })}
+                      onClick={() => setAddForm((prev) => ({ ...prev, permissions: [] }))}
                       className="text-[11px] font-semibold text-slate-500 hover:underline cursor-pointer"
                     >
                       Clear All
@@ -771,57 +738,38 @@ export default function VendorRolesPage() {
                   </div>
                 </div>
 
-                <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                  {permissionDomains.map((domain, dIdx) => {
-                    const domainIds = domain.permissions.map((p) => p.id);
-                    const allSelected = domainIds.every((id) => addForm.permissions.includes(id));
-
-                    return (
-                      <div key={dIdx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-blue-600 inline-block" />
-                            {domain.domain}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleDomain(domain.permissions, "add")}
-                            className="text-[10px] font-semibold text-blue-600 hover:underline cursor-pointer"
-                          >
-                            {allSelected ? "Uncheck All" : "Check All"}
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {domain.permissions.map((perm) => {
-                            const isChecked = addForm.permissions.includes(perm.id);
-                            return (
-                              <label
-                                key={perm.id}
-                                className={`p-2.5 rounded-xl border flex items-start gap-2.5 cursor-pointer transition select-none ${
-                                  isChecked
-                                    ? "bg-blue-50/80 border-blue-300"
-                                    : "bg-white border-slate-200 hover:bg-slate-100/50"
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => handleTogglePermission(perm.id, "add")}
-                                  className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                />
-                                <div>
-                                  <p className="text-xs font-bold text-slate-900 leading-tight">{perm.id}</p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">{perm.description}</p>
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <ModuleActionPermissionSelector
+                  modules={VENDOR_SIDEBAR_MODULES}
+                  mode="role"
+                  selectedPermissions={addForm.permissions}
+                  onTogglePermission={(key, nextChecked) => {
+                    setAddForm((prev) => ({
+                      ...prev,
+                      permissions: nextChecked
+                        ? [...prev.permissions.filter((p) => p !== key), key]
+                        : prev.permissions.filter((p) => p !== key),
+                    }));
+                  }}
+                  onSelectAllModule={(moduleId) => {
+                    const mod = VENDOR_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = mod.actions.map((a) => a.key);
+                    setAddForm((prev) => ({
+                      ...prev,
+                      permissions: Array.from(new Set([...prev.permissions, ...modKeys])),
+                    }));
+                  }}
+                  onClearModule={(moduleId) => {
+                    const mod = VENDOR_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = new Set(mod.actions.map((a) => a.key));
+                    setAddForm((prev) => ({
+                      ...prev,
+                      permissions: prev.permissions.filter((k) => !modKeys.has(k)),
+                    }));
+                  }}
+                  compact={true}
+                />
               </div>
 
               {/* Modal Actions */}
@@ -862,7 +810,7 @@ export default function VendorRolesPage() {
       {/* ========================================================================= */}
       {editingRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-fadeIn">
-          <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 sm:p-7 rounded-2xl bg-white shadow-xl border border-slate-200 space-y-6 animate-scaleUp">
+          <div className="max-w-5xl w-full max-h-[92vh] overflow-y-auto p-6 sm:p-7 rounded-2xl bg-white shadow-xl border border-slate-200 space-y-6 animate-scaleUp">
             <div className="flex items-start justify-between pb-4 border-b border-slate-100">
               <div>
                 <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-purple-50 text-purple-700 border border-purple-200 uppercase tracking-wider">
@@ -952,65 +900,66 @@ export default function VendorRolesPage() {
                 />
               </div>
 
-              {/* Permissions */}
+              {/* Permissions Section: Two-Column Module Action Selector */}
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                    Permissions — What can this role do? ({editForm.permissions.length} selected)
+                    Role Permissions Matrix ({editForm.permissions.length} selected)
                   </h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allKeys = VENDOR_SIDEBAR_MODULES.flatMap((m) => m.actions.map((a) => a.key));
+                        setEditForm((prev) => ({ ...prev, permissions: allKeys }));
+                      }}
+                      className="text-[11px] font-semibold text-purple-600 hover:underline cursor-pointer"
+                    >
+                      Select All
+                    </button>
+                    <span className="text-slate-300">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setEditForm((prev) => ({ ...prev, permissions: [] }))}
+                      className="text-[11px] font-semibold text-slate-500 hover:underline cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                  {permissionDomains.map((domain, dIdx) => {
-                    const domainIds = domain.permissions.map((p) => p.id);
-                    const allSelected = domainIds.every((id) => editForm.permissions.includes(id));
-
-                    return (
-                      <div key={dIdx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                            <span className="h-2 w-2 rounded-full bg-purple-600 inline-block" />
-                            {domain.domain}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleDomain(domain.permissions, "edit")}
-                            className="text-[10px] font-semibold text-blue-600 hover:underline cursor-pointer"
-                          >
-                            {allSelected ? "Uncheck All" : "Check All"}
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {domain.permissions.map((perm) => {
-                            const isChecked = editForm.permissions.includes(perm.id);
-                            return (
-                              <label
-                                key={perm.id}
-                                className={`p-2.5 rounded-xl border flex items-start gap-2.5 cursor-pointer transition select-none ${
-                                  isChecked
-                                    ? "bg-purple-50/80 border-purple-300"
-                                    : "bg-white border-slate-200 hover:bg-slate-100/50"
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => handleTogglePermission(perm.id, "edit")}
-                                  className="mt-0.5 rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
-                                />
-                                <div>
-                                  <p className="text-xs font-bold text-slate-900 leading-tight">{perm.id}</p>
-                                  <p className="text-[10px] text-slate-500 mt-0.5">{perm.description}</p>
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <ModuleActionPermissionSelector
+                  modules={VENDOR_SIDEBAR_MODULES}
+                  mode="role"
+                  selectedPermissions={editForm.permissions}
+                  onTogglePermission={(key, nextChecked) => {
+                    setEditForm((prev) => ({
+                      ...prev,
+                      permissions: nextChecked
+                        ? [...prev.permissions.filter((p) => p !== key), key]
+                        : prev.permissions.filter((p) => p !== key),
+                    }));
+                  }}
+                  onSelectAllModule={(moduleId) => {
+                    const mod = VENDOR_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = mod.actions.map((a) => a.key);
+                    setEditForm((prev) => ({
+                      ...prev,
+                      permissions: Array.from(new Set([...prev.permissions, ...modKeys])),
+                    }));
+                  }}
+                  onClearModule={(moduleId) => {
+                    const mod = VENDOR_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+                    if (!mod) return;
+                    const modKeys = new Set(mod.actions.map((a) => a.key));
+                    setEditForm((prev) => ({
+                      ...prev,
+                      permissions: prev.permissions.filter((k) => !modKeys.has(k)),
+                    }));
+                  }}
+                  compact={true}
+                />
               </div>
 
               <div className="flex items-center justify-between pt-4 border-t border-slate-100">

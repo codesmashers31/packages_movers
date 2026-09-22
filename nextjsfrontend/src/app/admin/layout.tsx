@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import AdminSidebar from "./components/AdminSidebar";
 import AdminHeader from "./components/AdminHeader";
 import ClientErrorHandler from "./components/ClientErrorHandler";
+import { fetchApi } from "@/lib/api";
 import { Loader2, AlertTriangle } from "lucide-react";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
@@ -28,30 +29,36 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       return;
     }
 
-    const safetyTimer = setTimeout(() => {
-      setCheckingAuth(false);
-    }, 600);
-
-    if (typeof window !== "undefined") {
+    const verifyAdminAuthorization = async () => {
+      if (typeof window === "undefined") return;
       const token = localStorage.getItem("auth_token");
       const userStr = localStorage.getItem("auth_user");
 
       if (!token || !userStr) {
-        clearTimeout(safetyTimer);
         setCheckingAuth(false);
         window.location.replace("/admin/login");
         return;
       }
 
       try {
-        const user = JSON.parse(userStr);
+        let user = JSON.parse(userStr);
         if (user.role !== "admin") {
           localStorage.removeItem("auth_token");
           localStorage.removeItem("auth_user");
-          clearTimeout(safetyTimer);
           setCheckingAuth(false);
           window.location.replace("/admin/login");
           return;
+        }
+
+        // Authoritatively query /auth/me from backend to avoid relying on stale local storage
+        try {
+          const meRes = await fetchApi<{ user: any }>("/auth/me");
+          if (meRes?.user) {
+            user = { ...user, ...meRes.user, id: meRes.user._id || meRes.user.id };
+            localStorage.setItem("auth_user", JSON.stringify(user));
+          }
+        } catch (meErr) {
+          // Keep cached user if network is momentarily unavailable
         }
 
         const userPerms: string[] = Array.isArray(user.permissions) ? user.permissions : [];
@@ -90,7 +97,6 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             if (!hasPerm) {
               setIsAuthorized(false);
               setMissingPerm(Array.isArray(matchedPerm) ? matchedPerm.join(" or ") : matchedPerm);
-              clearTimeout(safetyTimer);
               setCheckingAuth(false);
               return;
             }
@@ -101,17 +107,29 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       } catch (err) {
         localStorage.removeItem("auth_token");
         localStorage.removeItem("auth_user");
-        clearTimeout(safetyTimer);
         setCheckingAuth(false);
         window.location.replace("/admin/login");
         return;
+      } finally {
+        setCheckingAuth(false);
       }
+    };
 
-      clearTimeout(safetyTimer);
-      setCheckingAuth(false);
-    }
+    verifyAdminAuthorization();
 
-    return () => clearTimeout(safetyTimer);
+    const onPermissionsUpdated = () => {
+      verifyAdminAuthorization();
+    };
+
+    window.addEventListener("focus", onPermissionsUpdated);
+    window.addEventListener("admin-permissions-updated", onPermissionsUpdated);
+    window.addEventListener("permissions-updated", onPermissionsUpdated);
+
+    return () => {
+      window.removeEventListener("focus", onPermissionsUpdated);
+      window.removeEventListener("admin-permissions-updated", onPermissionsUpdated);
+      window.removeEventListener("permissions-updated", onPermissionsUpdated);
+    };
   }, [pathname, isLoginPage, router]);
 
   // If on login page, don't show admin chrome

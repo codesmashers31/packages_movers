@@ -499,3 +499,96 @@ export const rejectQuote = async (req: AuthenticatedRequest, res: Response): Pro
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to reject quotation' } });
   }
 };
+
+/**
+ * PATCH /api/v1/vendor/quotations/:id
+ * Update/revise an existing quotation before customer acceptance.
+ */
+export const updateVendorQuote = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    let vendor = req.vendor;
+    if (!vendor) {
+      if (req.user?.vendorId) {
+        vendor = await Vendor.findById(req.user.vendorId);
+      }
+      if (!vendor) {
+        vendor = await Vendor.findOne({ ownerId: req.user?.id });
+      }
+    }
+    if (!vendor) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vendor context required' } });
+      return;
+    }
+
+    const { id } = req.params;
+    const quote = await Quote.findOne({ _id: id, vendorId: vendor._id });
+    if (!quote) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Quotation not found' } });
+      return;
+    }
+
+    if (quote.status !== 'SUBMITTED') {
+      res.status(400).json({ error: { code: 'BAD_REQUEST', message: `Cannot modify quotation in '${quote.status}' state` } });
+      return;
+    }
+
+    const { totalAmount, totalAmountMinorUnits, vehicleType, vehicleSpecs, crewCount, crewRoles, inclusions, exclusions, assumptions } = req.body;
+    if (totalAmount !== undefined) quote.totalAmountMinorUnits = Math.round(Number(totalAmount) * 100);
+    if (totalAmountMinorUnits !== undefined) quote.totalAmountMinorUnits = Number(totalAmountMinorUnits);
+    if (vehicleType !== undefined) quote.vehicleType = vehicleType;
+    if (vehicleSpecs !== undefined) quote.vehicleSpecs = vehicleSpecs;
+    if (crewCount !== undefined) quote.crewCount = Number(crewCount);
+    if (crewRoles !== undefined) quote.crewRoles = crewRoles;
+    if (inclusions !== undefined) quote.inclusions = inclusions;
+    if (exclusions !== undefined) quote.exclusions = exclusions;
+    if (assumptions !== undefined) quote.assumptions = assumptions;
+
+    await quote.save();
+    res.status(200).json({ quotation: quote, message: 'Quotation updated successfully' });
+  } catch (error) {
+    console.error('[updateVendorQuote] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to update quotation' } });
+  }
+};
+
+/**
+ * DELETE /api/v1/vendor/quotations/:id
+ * Withdraw/cancel an existing quotation.
+ */
+export const deleteVendorQuote = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    let vendor = req.vendor;
+    if (!vendor) {
+      if (req.user?.vendorId) {
+        vendor = await Vendor.findById(req.user.vendorId);
+      }
+      if (!vendor) {
+        vendor = await Vendor.findOne({ ownerId: req.user?.id });
+      }
+    }
+    if (!vendor) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Vendor context required' } });
+      return;
+    }
+
+    const { id } = req.params;
+    const quote = await Quote.findOne({ _id: id, vendorId: vendor._id });
+    if (!quote) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Quotation not found' } });
+      return;
+    }
+
+    if (quote.status === 'ACCEPTED') {
+      res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Cannot withdraw an accepted quotation' } });
+      return;
+    }
+
+    quote.status = 'WITHDRAWN';
+    await quote.save();
+    res.status(200).json({ message: 'Quotation withdrawn successfully', quotationId: id });
+  } catch (error) {
+    console.error('[deleteVendorQuote] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to withdraw quotation' } });
+  }
+};
+

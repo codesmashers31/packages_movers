@@ -19,6 +19,7 @@ import {
   Ban,
   Building2,
   UserCheck,
+  ShieldCheck,
   FileText,
   Camera,
   Download,
@@ -62,43 +63,56 @@ interface VendorApplication {
 }
 
 const STANDARD_KYC_DOCS = [
-  // Section 1: Business
+  // Section 1: Company Verification (2 Core Documents)
   {
     type: "GST_CERTIFICATE",
-    category: "BUSINESS",
+    category: "COMPANY",
+    section: "COMPANY",
     title: "GST Registration Certificate",
-    description: "Mandatory GSTIN certificate issued by Central Board of Indirect Taxes and Customs.",
-  },
-  {
-    type: "TRANSPORT_PERMIT",
-    category: "BUSINESS",
-    title: "All India Goods Transport Permit",
-    description: "State / National transport authority commercial logistics permit.",
-  },
-  {
-    type: "TRANSIT_INSURANCE",
-    category: "BUSINESS",
-    title: "Goods In-Transit Insurance Policy",
-    description: "Indemnity policy protecting cargo and customer goods during transit.",
+    description: "Core business identity document required for company approval.",
+    required: true,
   },
   {
     type: "BUSINESS_PAN",
-    category: "BUSINESS",
+    category: "COMPANY",
+    section: "COMPANY",
     title: "Company / Business PAN Card",
-    description: "Permanent Account Number issued by Income Tax Department.",
+    description: "Permanent Account Number registered with Income Tax Department.",
+    required: true,
   },
-  // Section 2: Owner / Representative
+  // Section 2: Owner / Authorized Representative Verification (2 Core Documents)
   {
     type: "REPRESENTATIVE_ID_PROOF",
     category: "REPRESENTATIVE",
+    section: "REPRESENTATIVE",
     title: "Government Identity Proof",
     description: "Official ID proof (Aadhaar, Passport, Driving Licence, or Other) of owner / representative.",
+    required: true,
   },
   {
     type: "REPRESENTATIVE_PHOTO",
     category: "REPRESENTATIVE",
-    title: "Owner / Representative Photo",
-    description: "Photograph of the business owner or authorized representative for KYC.",
+    section: "REPRESENTATIVE",
+    title: "Representative Photo / Camera Capture",
+    description: "Recent photograph of the business owner or authorized representative for identity verification.",
+    required: true,
+  },
+  // Section 3: Operational Compliance (Optional / Service-Specific)
+  {
+    type: "TRANSPORT_PERMIT",
+    category: "OPERATIONAL",
+    section: "OPERATIONAL",
+    title: "All India Goods Transport Permit",
+    description: "Commercial logistics transport permit (operational compliance; does not block core company approval).",
+    required: false,
+  },
+  {
+    type: "TRANSIT_INSURANCE",
+    category: "OPERATIONAL",
+    section: "OPERATIONAL",
+    title: "Goods In-Transit Insurance Policy",
+    description: "Cargo transit indemnity policy protecting customer goods (operational compliance; does not block core company approval).",
+    required: false,
   },
 ];
 
@@ -516,17 +530,22 @@ export default function AdminVendorRequestsPage() {
                 </div>
               </div>
 
-              {/* SECTION 1: BUSINESS VERIFICATION (4 DOCUMENTS) */}
+              {/* SECTION 1: COMPANY VERIFICATION (2 CORE DOCUMENTS) */}
               <div className="space-y-3">
-                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
-                  <Building2 size={16} className="text-[#2563EB]" />
-                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                    Section 1 — Business Verification (Commercial Documents)
-                  </h4>
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Building2 size={16} className="text-[#2563EB]" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 1 — Company Verification (Core Business Documents)
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#2563EB] bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    2 Core Documents Required
+                  </span>
                 </div>
 
                 <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.category === "BUSINESS").map((std) => {
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "COMPANY" || d.type === "GST_CERTIFICATE" || d.type === "BUSINESS_PAN").map((std) => {
                     const submitted = (inspectApp.verificationDetails?.documents || []).find(
                       (d) => d.type === std.type
                     );
@@ -573,17 +592,22 @@ export default function AdminVendorRequestsPage() {
                 </div>
               </div>
 
-              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 DOCUMENTS) */}
+              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 CORE DOCUMENTS) */}
               <div className="space-y-3">
-                <div className="flex items-center gap-2 border-b border-[#D9E2EC]/70 pb-2">
-                  <UserCheck size={16} className="text-[#14B8A6]" />
-                  <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                    Section 2 — Owner / Authorized Representative Verification
-                  </h4>
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <UserCheck size={16} className="text-[#14B8A6]" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 2 — Owner / Authorized Representative Verification
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#14B8A6] bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                    2 Required Items
+                  </span>
                 </div>
 
                 <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.category === "REPRESENTATIVE").map((std) => {
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "REPRESENTATIVE" || d.type === "REPRESENTATIVE_ID_PROOF" || d.type === "REPRESENTATIVE_PHOTO").map((std) => {
                     const submitted = (inspectApp.verificationDetails?.documents || []).find(
                       (d) => d.type === std.type
                     );
@@ -598,6 +622,68 @@ export default function AdminVendorRequestsPage() {
                         submitted={submitted}
                         status={status}
                         isPhoto={std.type === "REPRESENTATIVE_PHOTO"}
+                        onView={() =>
+                          setViewingFile({
+                            title: std.title,
+                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectApp._id}/documents/${std.type}/view`,
+                            fileName: submitted?.fileName,
+                            fileSize: submitted?.fileSize,
+                            docType: std.type,
+                            vendorId: inspectApp._id,
+                            vendorName: inspectApp.businessName,
+                            status,
+                            feedback: submitted?.feedback,
+                            idType: submitted?.idType,
+                            maskedIdNumber: submitted?.maskedIdNumber,
+                          })
+                        }
+                        onApprove={() => handleDocumentDecision(inspectApp._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
+                        onRequestChanges={() => handleDocumentDecision(inspectApp._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
+                        onReject={() => handleDocumentDecision(inspectApp._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
+                        onFeedbackNotes={() => {
+                          setDocReviewReason(submitted?.feedback || "");
+                          setDocReviewPrompt({
+                            vendorId: inspectApp._id,
+                            docType: std.type,
+                            title: std.title,
+                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
+                          });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* SECTION 3: OPERATIONAL COMPLIANCE (OPTIONAL / SERVICE-SPECIFIC) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={16} className="text-emerald-600" />
+                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
+                      Section 3 — Operational Compliance (Optional / Service-Specific)
+                    </h4>
+                  </div>
+                  <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                    Does not block core approval
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {STANDARD_KYC_DOCS.filter((d) => d.section === "OPERATIONAL" || d.type === "TRANSPORT_PERMIT" || d.type === "TRANSIT_INSURANCE").map((std) => {
+                    const submitted = (inspectApp.verificationDetails?.documents || []).find(
+                      (d) => d.type === std.type
+                    );
+                    const status = submitted?.status || "NOT_SUBMITTED";
+
+                    return (
+                      <AdminDocReviewRow
+                        key={std.type}
+                        title={std.title}
+                        type={std.type}
+                        description={std.description}
+                        submitted={submitted}
+                        status={status}
                         onView={() =>
                           setViewingFile({
                             title: std.title,

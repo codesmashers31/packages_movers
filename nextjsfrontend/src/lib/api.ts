@@ -80,7 +80,25 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data?.error?.message || `API error (${response.status})`);
+    if (
+      response.status === 403 &&
+      (data?.error?.code === 'VENDOR_NOT_APPROVED' || data?.error?.code === 'VENDOR_SUSPENDED')
+    ) {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('active_vendor_verification_access', 'RESTRICTED');
+        if (data.vendorStatus) localStorage.setItem('active_vendor_status', data.vendorStatus);
+        if (data.verificationStatus) localStorage.setItem('active_vendor_verification_status', data.verificationStatus);
+        if (data.reviewReason) localStorage.setItem('active_vendor_review_reason', data.reviewReason);
+        if (data.blockingItem) localStorage.setItem('active_vendor_blocking_item', data.blockingItem);
+        window.dispatchEvent(new CustomEvent('vendor-permissions-updated', { detail: { access: 'RESTRICTED', ...data } }));
+        window.dispatchEvent(new CustomEvent('vendor-status-updated', { detail: { access: 'RESTRICTED', ...data } }));
+      }
+    }
+    const err: any = new Error(data?.error?.message || `API error (${response.status})`);
+    err.status = response.status;
+    err.code = data?.error?.code;
+    err.data = data;
+    throw err;
   }
 
   return data as T;

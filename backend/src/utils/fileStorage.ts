@@ -193,3 +193,75 @@ export async function saveDocumentFile(
     mimeType,
   };
 }
+
+/**
+ * Saves a company logo image file safely on disk.
+ */
+export async function saveLogoFile(
+  vendorId: string,
+  filePayload: string | Buffer,
+  originalName?: string
+): Promise<{
+  filePath: string;
+  fileName: string;
+  fileSize: string;
+  mimeType: string;
+  logoUrl: string;
+}> {
+  const dir = path.resolve(process.cwd(), 'uploads', 'logos', vendorId);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  let buffer: Buffer;
+  let mimeType = 'image/png';
+  let ext = '.png';
+
+  if (typeof filePayload === 'string') {
+    if (filePayload.startsWith('data:')) {
+      const parts = filePayload.split(',');
+      const meta = parts[0];
+      const base64Data = parts[1] || '';
+
+      const match = meta.match(/^data:([^;]+);/);
+      if (match && match[1]) {
+        mimeType = match[1].toLowerCase();
+        if (mimeType.includes('jpeg') || mimeType.includes('jpg')) ext = '.jpg';
+        else if (mimeType.includes('png')) ext = '.png';
+        else if (mimeType.includes('webp')) ext = '.webp';
+        else if (mimeType.includes('svg')) ext = '.svg';
+      }
+      buffer = Buffer.from(base64Data, 'base64');
+    } else {
+      buffer = Buffer.from(filePayload, 'base64');
+    }
+  } else {
+    buffer = filePayload;
+    if (originalName) {
+      ext = path.extname(originalName).toLowerCase() || '.png';
+      mimeType = resolveDocumentMime(originalName);
+    }
+  }
+
+  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml'];
+  if (!allowedMimes.includes(mimeType)) {
+    throw new Error('Invalid image format. Allowed formats: PNG, JPG, JPEG, WebP, SVG.');
+  }
+
+  const fileName = `logo_${Date.now()}${ext}`;
+  const filePath = path.join(dir, fileName);
+
+  await fs.promises.writeFile(filePath, buffer);
+
+  const sizeKb = Math.round(buffer.length / 1024);
+  const fileSize = sizeKb > 1000 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
+
+  return {
+    filePath,
+    fileName,
+    fileSize,
+    mimeType,
+    logoUrl: `/api/v1/vendor/logo`,
+  };
+}
+

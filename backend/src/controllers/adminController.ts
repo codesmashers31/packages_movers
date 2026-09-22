@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { AuthenticatedRequest, DEFAULT_ROLE_PERMISSIONS, invalidatePermissionsCache } from '../middlewares/auth.js';
 import { User } from '../models/User.js';
 import { Vendor } from '../models/Vendor.js';
@@ -17,6 +18,7 @@ import { resolveDocumentMime, generateValidPdfBuffer } from '../utils/fileStorag
 import { bootstrapVendorOperations } from '../utils/seedOperations.js';
 import { sendCredentialsViaWhatsApp } from '../utils/whatsappService.js';
 import { createCrossNotification } from '../utils/notificationHelper.js';
+import { getVendorVerificationDecision } from '../middlewares/vendorAuth.js';
 
 // Standardized DB connection guard
 const ensureDB = (res: Response): boolean => {
@@ -729,6 +731,8 @@ export const updatePermission = async (req: AuthenticatedRequest, res: Response)
       { upsert: true, new: true }
     );
 
+    invalidatePermissionsCache();
+
     await logAdminAction(
       req.user?.id,
       req.user?.phone,
@@ -777,6 +781,7 @@ export const getAdminEmployees = async (req: AuthenticatedRequest, res: Response
         };
 
       empObj.roleName = roleInfo.name;
+      empObj.companyName = 'Package Movers Platform Administration';
       empObj.department = emp.adminDepartment || (roleInfo as any).department || 'General Administration';
       empObj.resolvedPermissions =
         Array.isArray(emp.permissions) && emp.permissions.length > 0
@@ -798,6 +803,12 @@ export const createAdminEmployee = async (req: AuthenticatedRequest, res: Respon
 
   try {
     const { displayName, phone, email: customEmail, adminRole = 'operations_manager', adminDepartment, permissions = [] } = req.body;
+
+    const isSuperAdmin = req.user?.phone === '+919876543210' || (req.user as any)?.adminRole === 'super_admin';
+    if (adminRole === 'super_admin' && !isSuperAdmin) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only a Super Administrator can onboard new super_admin accounts.' } });
+      return;
+    }
 
     if (!displayName || !phone) {
       res.status(400).json({
@@ -929,17 +940,159 @@ export const createAdminEmployee = async (req: AuthenticatedRequest, res: Respon
   }
 };
 
+export const getAdminEmployeeById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  if (!ensureDB(res)) return;
+
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid employee ID format' } });
+      return;
+    }
+
+    const isSelf = req.user?.id === String(id);
+    const isSuperAdmin = req.user?.phone === '+919876543210' || (req.user as any)?.adminRole === 'super_admin';
+
+    if (!isSelf && !isSuperAdmin) {
+      const { resolveUserPermissions } = await import('./authController.js');
+      const caller = await User.findById(req.user?.id);
+      const callerPerms = caller ? await resolveUserPermissions(caller) : [];
+      const canView = callerPerms.some((p) =>
+        ['staff:view', 'staff:manage', 'permissions:manage', '*'].includes(p)
+      );
+      if (!canView) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to view other staff profiles.',
+          },
+        });
+        return;
+      }
+    }
+
+    const employee = await User.findOne({ _id: id, role: 'admin' })
+      .populate('reportsTo', 'displayName phone adminRole username email')
+      .select('-password -plainTempPassword -resetPasswordToken');
+
+    if (!employee) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Admin employee not found' } });
+      return;
+    }
+
+    const customSetting = await PlatformSetting.findOne({ key: 'custom_admin_roles' });
+    const customRoles: any[] = Array.isArray(customSetting?.value) ? customSetting!.value : [];
+
+    const roleId = employee.adminRole || 'super_admin';
+    const roleInfo =
+      STANDARD_ADMIN_ROLES.find((r) => r.id === roleId) ||
+      customRoles.find((r) => r.id === roleId) || {
+        id: roleId,
+        name: roleId === 'super_admin' ? 'Super Administrator' : roleId,
+        department: employee.adminDepartment || 'General Administration',
+        permissions: roleId === 'super_admin' ? ['*'] : [],
+      };
+
+    const directReports = await User.find({
+      reportsTo: employee._id,
+      accountStatus: { $ne: 'deleted' },
+    }).select('_id displayName username phone adminRole adminDepartment accountStatus createdAt');
+
+    // Real MongoDB AuditLog records involving this admin
+    const recentActivity = await AuditLog.find({
+      $or: [
+        { actorId: employee._id },
+        { targetId: employee._id.toString() },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(15)
+      .lean();
+
+    const empObj: any = employee.toObject();
+    empObj.roleName = roleInfo.name;
+    empObj.department = employee.adminDepartment || (roleInfo as any).department || 'General Administration';
+
+    // Effective permissions: (Role Defaults + Granted) - Revoked
+    let effectivePermissions: string[] = [];
+    if (roleId === 'super_admin' || employee.phone === '+919876543210') {
+      effectivePermissions = ['*'];
+    } else {
+      const basePerms = roleInfo.permissions || [];
+      const granted = employee.permissionOverrides?.granted || [];
+      const revoked = employee.permissionOverrides?.revoked || [];
+      if (granted.length > 0 || revoked.length > 0) {
+        effectivePermissions = Array.from(new Set([...basePerms, ...granted])).filter((p) => !revoked.includes(p));
+      } else if (Array.isArray(employee.permissions) && employee.permissions.length > 0) {
+        effectivePermissions = employee.permissions;
+      } else {
+        effectivePermissions = basePerms;
+      }
+    }
+
+    empObj.companyName = 'Package Movers Platform Administration';
+
+    res.status(200).json({
+      employee: empObj,
+      companyName: 'Package Movers Platform Administration',
+      roleInfo,
+      effectivePermissions,
+      permissionOverrides: employee.permissionOverrides || { granted: [], revoked: [] },
+      directReports,
+      recentActivity,
+    });
+  } catch (error: any) {
+    console.error('[getAdminEmployeeById] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to fetch admin employee profile' } });
+  }
+};
+
 export const updateAdminEmployee = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   if (!ensureDB(res)) return;
 
   try {
     const { id } = req.params;
-    const { displayName, adminRole, adminDepartment, permissions, accountStatus } = req.body;
+    const { displayName, adminRole, adminDepartment, department, reportsTo, permissions, permissionOverrides, accountStatus } = req.body;
 
     const employee = await User.findOne({ _id: id, role: 'admin' });
     if (!employee) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Admin employee not found' } });
       return;
+    }
+
+    const isSelf = req.user?.id === String(id);
+    const isSuperAdmin = req.user?.phone === '+919876543210' || (req.user as any)?.adminRole === 'super_admin';
+
+    // Prevent self-privilege escalation
+    if (isSelf && !isSuperAdmin) {
+      if (adminRole !== undefined || permissions !== undefined || permissionOverrides !== undefined || accountStatus !== undefined) {
+        res.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'You cannot alter your own admin role, permissions, or account status.' },
+        });
+        return;
+      }
+    }
+
+    // Only super_admin can assign super_admin
+    if (adminRole === 'super_admin' && !isSuperAdmin) {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'Only a Super Administrator can assign the super_admin role.' },
+      });
+      return;
+    }
+
+    // Updating roles, permissions, or overrides requires permissions:manage or staff:manage
+    if ((permissions !== undefined || permissionOverrides !== undefined || adminRole !== undefined) && !isSuperAdmin) {
+      const { resolveUserPermissions } = await import('./authController.js');
+      const caller = await User.findById(req.user?.id);
+      const callerPerms = caller ? await resolveUserPermissions(caller) : [];
+      if (!callerPerms.includes('permissions:manage') && !callerPerms.includes('staff:manage') && !callerPerms.includes('*')) {
+        res.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'You do not have permission to modify staff roles or permissions.' },
+        });
+        return;
+      }
     }
 
     // Protect root admin from suspension or demotion
@@ -950,11 +1103,47 @@ export const updateAdminEmployee = async (req: AuthenticatedRequest, res: Respon
       return;
     }
 
+    // ReportsTo validation
+    if (reportsTo !== undefined) {
+      if (reportsTo && reportsTo !== 'none') {
+        if (String(id) === String(reportsTo)) {
+          res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'An admin cannot report to themselves.' } });
+          return;
+        }
+        const manager = await User.findOne({ _id: reportsTo, role: 'admin' });
+        if (!manager) {
+          res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Designated manager not found or is not an administrator.' } });
+          return;
+        }
+        employee.reportsTo = new mongoose.Types.ObjectId(reportsTo);
+      } else {
+        employee.reportsTo = undefined;
+      }
+    }
+
     if (displayName) employee.displayName = displayName.trim();
     if (adminRole) employee.adminRole = adminRole;
     if (adminDepartment) employee.adminDepartment = adminDepartment.trim();
-    if (Array.isArray(permissions)) employee.permissions = permissions;
+    if (department) employee.department = department.trim();
     if (accountStatus) employee.accountStatus = accountStatus;
+
+    // Granular permission overrides
+    if (permissionOverrides !== undefined) {
+      const granted = Array.isArray(permissionOverrides?.granted) ? permissionOverrides.granted : [];
+      const revoked = Array.isArray(permissionOverrides?.revoked) ? permissionOverrides.revoked : [];
+      employee.permissionOverrides = { granted, revoked };
+
+      const activeRoleId = adminRole || employee.adminRole || 'super_admin';
+      const customSetting = await PlatformSetting.findOne({ key: 'custom_admin_roles' });
+      const customRoles: any[] = Array.isArray(customSetting?.value) ? customSetting!.value : [];
+      const matchedRole =
+        STANDARD_ADMIN_ROLES.find((r) => r.id === activeRoleId) ||
+        customRoles.find((r) => r.id === activeRoleId);
+      const basePerms = matchedRole?.permissions || [];
+      employee.permissions = Array.from(new Set([...basePerms, ...granted])).filter((p) => !revoked.includes(p));
+    } else if (Array.isArray(permissions)) {
+      employee.permissions = permissions;
+    }
 
     await employee.save();
     invalidatePermissionsCache(Array.isArray(id) ? id[0] : id);
@@ -969,7 +1158,11 @@ export const updateAdminEmployee = async (req: AuthenticatedRequest, res: Respon
       { adminRole, accountStatus, adminDepartment }
     );
 
-    res.status(200).json({ employee });
+    const updatedEmp = await User.findById(id)
+      .populate('reportsTo', 'displayName phone adminRole username email')
+      .select('-password -plainTempPassword');
+
+    res.status(200).json({ employee: updatedEmp });
   } catch (error: any) {
     console.error('[updateAdminEmployee] Error:', error);
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to update admin employee' } });
@@ -1102,17 +1295,21 @@ export const getAdminRoles = async (req: AuthenticatedRequest, res: Response): P
     const customSetting = await PlatformSetting.findOne({ key: 'custom_admin_roles' });
     const customRoles: any[] = Array.isArray(customSetting?.value) ? customSetting!.value : [];
 
-    const allRoles = [
-      ...STANDARD_ADMIN_ROLES.map((r) => ({
+    const roleMap = new Map<string, any>();
+    for (const r of STANDARD_ADMIN_ROLES) {
+      roleMap.set(r.id, {
         ...r,
         userCount: countMap[r.id] || 0,
-      })),
-      ...customRoles.map((r) => ({
+      });
+    }
+    for (const r of customRoles) {
+      roleMap.set(r.id, {
         ...r,
         isSystem: false,
         userCount: countMap[r.id] || 0,
-      })),
-    ];
+      });
+    }
+    const allRoles = Array.from(roleMap.values());
 
     res.status(200).json({ roles: allRoles, permissionsList: PERMISSIONS_METADATA });
   } catch (error) {
@@ -1172,6 +1369,7 @@ export const createAdminRole = async (req: AuthenticatedRequest, res: Response):
     setting.value = customRoles;
     setting.markModified('value');
     await setting.save();
+    invalidatePermissionsCache();
 
     await logAdminAction(
       req.user?.id,
@@ -1224,6 +1422,17 @@ export const updateAdminRole = async (req: AuthenticatedRequest, res: Response):
 
     setting.markModified('value');
     await setting.save();
+    invalidatePermissionsCache();
+
+    await logAdminAction(
+      req.user?.id,
+      req.user?.phone,
+      'ADMIN_ROLE_UPDATED',
+      'PlatformSetting',
+      id,
+      `Updated custom admin role: ${customRoles[roleIndex].name} (${id})`,
+      customRoles[roleIndex]
+    );
 
     res.status(200).json({ role: customRoles[roleIndex] });
   } catch (error) {
@@ -1250,6 +1459,7 @@ export const deleteAdminRole = async (req: AuthenticatedRequest, res: Response):
     }
 
     const customRoles: any[] = setting.value;
+    const target = customRoles.find((r) => r.id === id);
     const filtered = customRoles.filter((r) => r.id !== id);
     if (filtered.length === customRoles.length) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Custom role not found' } });
@@ -1262,6 +1472,17 @@ export const deleteAdminRole = async (req: AuthenticatedRequest, res: Response):
 
     // Reassign any users with this role to operations_manager
     await User.updateMany({ role: 'admin', adminRole: id }, { $set: { adminRole: 'operations_manager' } });
+    invalidatePermissionsCache();
+
+    await logAdminAction(
+      req.user?.id,
+      req.user?.phone,
+      'ADMIN_ROLE_DELETED',
+      'PlatformSetting',
+      id,
+      `Deleted custom admin role: ${target?.name || id}`,
+      { deletedRoleId: id, previousRole: target }
+    );
 
     res.status(200).json({ success: true, message: `Role ${id} deleted successfully.` });
   } catch (error) {
@@ -1361,18 +1582,31 @@ export const createVendorCompany = async (req: AuthenticatedRequest, res: Respon
       return;
     }
 
+    // Generate secure 32-byte cryptographic invitation token
+    const rawInvitationToken = crypto.randomBytes(32).toString('hex');
+    const invitationTokenHash = crypto.createHash('sha256').update(rawInvitationToken).digest('hex');
+    const invitationExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7-day token expiry
+
     // Ensure owner user account exists and has vendor role
     let owner = await User.findOne({ phone: contactPhone.trim() });
     if (!owner) {
       owner = await User.create({
         phone: contactPhone.trim(),
+        email: contactEmail ? contactEmail.trim().toLowerCase() : undefined,
         displayName: businessName.trim(),
         role: 'vendor',
         accountStatus: 'active',
+        mustChangePassword: true,
+        invitationTokenHash,
+        invitationExpires,
         verifiedAt: new Date(),
       });
     } else {
       owner.role = 'vendor';
+      if (contactEmail) owner.email = contactEmail.trim().toLowerCase();
+      owner.mustChangePassword = true;
+      owner.invitationTokenHash = invitationTokenHash;
+      owner.invitationExpires = invitationExpires;
       await owner.save();
     }
 
@@ -1380,11 +1614,15 @@ export const createVendorCompany = async (req: AuthenticatedRequest, res: Respon
       ownerId: owner._id,
       businessName: businessName.trim(),
       contactPhone: contactPhone.trim(),
-      contactEmail: contactEmail ? contactEmail.trim() : undefined,
-      status: 'APPROVED',
+      contactEmail: contactEmail ? contactEmail.trim().toLowerCase() : undefined,
+      status: 'PENDING_REVIEW', // Vendor onboarding starts in PENDING_REVIEW
       serviceAreas: Array.isArray(serviceAreas) ? serviceAreas : [],
       servicesOffered: Array.isArray(servicesOffered) ? servicesOffered : [],
-      verificationDetails: { verifiedByAdmin: true, approvedAt: new Date() },
+      verificationDetails: {
+        createdViaAdminInvitation: true,
+        invitedAt: new Date(),
+        documents: [],
+      },
     });
 
     // Update owner's vendorId
@@ -1404,11 +1642,24 @@ export const createVendorCompany = async (req: AuthenticatedRequest, res: Respon
       'CREATE_VENDOR',
       'Vendor',
       vendor._id.toString(),
-      `Created and approved vendor company ${businessName}`,
-      { businessName, contactPhone }
+      `Created vendor company ${businessName} with invitation token (PENDING_REVIEW)`,
+      { businessName, contactPhone, vendorId: vendor._id.toString() }
     );
 
-    res.status(201).json({ vendor });
+    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const invitationUrl = `${baseUrl}/auth/accept-invitation?token=${rawInvitationToken}`;
+
+    res.status(201).json({
+      message: 'Vendor company created successfully with invitation credentials.',
+      vendor,
+      invitationUrl,
+      invitationToken: rawInvitationToken,
+      deliveryStatus: {
+        email: 'pending_provider_configuration',
+        sms: 'pending_provider_configuration',
+        message: 'No external email/SMS provider configured. Please provide the invitation URL directly to the vendor owner.',
+      },
+    });
   } catch (error) {
     console.error('[createVendorCompany] Error:', error);
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to create vendor' } });
@@ -1425,26 +1676,146 @@ export const getVendorById = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
-    const vendor = await Vendor.findById(id).populate('ownerId', 'displayName phone');
+    const vendor = await Vendor.findById(id).populate('ownerId', 'displayName phone email');
     if (!vendor) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Vendor not found' } });
       return;
     }
 
     const vendorObj: any = vendor.toObject ? vendor.toObject() : vendor;
-    const employeeCount = await User.countDocuments({ vendorId: vendor._id, accountStatus: { $ne: 'deleted' } });
-    vendorObj.employeeCount = employeeCount;
+    const vendorId = vendor._id;
+
+    // Derived workforce counts directly from MongoDB User collection
+    const [totalEmployees, crewWorkers, activeEmployees] = await Promise.all([
+      User.countDocuments({ vendorId, accountStatus: { $ne: 'deleted' } }),
+      User.countDocuments({ vendorId, role: 'worker', accountStatus: { $ne: 'deleted' } }),
+      User.countDocuments({ vendorId, accountStatus: 'active' }),
+    ]);
+
+    vendorObj.employeeCount = totalEmployees;
+    vendorObj.workforce = {
+      totalEmployees,
+      crewWorkers,
+      activeEmployees,
+    };
     vendorObj.customRolesCount = vendor.customRoles?.length || 0;
     vendorObj.customServicesCount = vendor.customServices?.length || 0;
 
-    if (vendorObj.verificationDetails?.documents && Array.isArray(vendorObj.verificationDetails.documents)) {
-      vendorObj.verificationDetails.documents = vendorObj.verificationDetails.documents.map((d: any) => ({
-        ...d,
-        fileUrl: `/api/v1/admin/vendors/${vendor._id.toString()}/documents/${d.type}/view`,
-      }));
+    const docs = vendorObj.verificationDetails?.documents || [];
+
+    const standardDocTypes = [
+      // Section 1: Company Verification (2 Core Documents)
+      {
+        type: 'GST_CERTIFICATE',
+        category: 'COMPANY',
+        section: 'COMPANY',
+        title: 'GST Registration Certificate',
+        description: 'Core business identity document required for company approval.',
+        required: true,
+      },
+      {
+        type: 'BUSINESS_PAN',
+        category: 'COMPANY',
+        section: 'COMPANY',
+        title: 'Company / Business PAN Card',
+        description: 'Permanent Account Number registered with the Income Tax Department.',
+        required: true,
+      },
+      // Section 2: Owner / Representative Verification (2 Core Documents)
+      {
+        type: 'REPRESENTATIVE_ID_PROOF',
+        category: 'REPRESENTATIVE',
+        section: 'REPRESENTATIVE',
+        title: 'Government Identity Proof',
+        description: 'Official government-issued identity proof (Aadhaar, Passport, Driving Licence, or Other) of the business owner or authorized representative.',
+        required: true,
+        supportedIdTypes: ['Aadhaar', 'Passport', 'Driving Licence', 'Voter ID', 'Other'],
+      },
+      {
+        type: 'REPRESENTATIVE_PHOTO',
+        category: 'REPRESENTATIVE',
+        section: 'REPRESENTATIVE',
+        title: 'Representative Photo / Camera Capture',
+        description: 'Recent photograph of the business owner or authorized representative for identity verification.',
+        required: true,
+      },
+      // Section 3: Operational Compliance (Optional / Service-Specific)
+      {
+        type: 'TRANSPORT_PERMIT',
+        category: 'OPERATIONAL',
+        section: 'OPERATIONAL',
+        title: 'All India Goods Transport Permit',
+        description: 'Commercial logistics transport permit (operational compliance; mandatory for operational permissions).',
+        required: false,
+      },
+      {
+        type: 'TRANSIT_INSURANCE',
+        category: 'OPERATIONAL',
+        section: 'OPERATIONAL',
+        title: 'Goods In-Transit Insurance Policy',
+        description: 'Cargo transit indemnity policy protecting customer household assets (operational compliance; mandatory for operational permissions).',
+        required: false,
+      },
+    ];
+
+    const documentChecklist = standardDocTypes.map((std) => {
+      const submitted = docs.find((d: any) => d.type === std.type);
+      return {
+        ...std,
+        status: submitted?.status || 'NOT_SUBMITTED',
+        fileUrl: submitted ? `/api/v1/admin/vendors/${vendorId.toString()}/documents/${std.type}/view` : null,
+        fileName: submitted?.fileName || null,
+        fileSize: submitted?.fileSize || null,
+        mimeType: submitted?.mimeType || 'application/pdf',
+        idType: submitted?.idType || null,
+        maskedIdNumber: submitted?.maskedIdNumber || null,
+        submittedAt: submitted?.submittedAt || null,
+        reviewedAt: submitted?.reviewedAt || null,
+        feedback: submitted?.feedback || null,
+      };
+    });
+
+    const coreApprovedCount = documentChecklist.filter(
+      (d) => ['GST_CERTIFICATE', 'BUSINESS_PAN', 'REPRESENTATIVE_ID_PROOF', 'REPRESENTATIVE_PHOTO'].includes(d.type) && d.status === 'APPROVED'
+    ).length;
+    const coreRequiredCount = 4;
+    const coreVerificationComplete = coreApprovedCount === 4;
+
+    const totalApprovedCount = documentChecklist.filter((d) => d.status === 'APPROVED').length;
+    const totalRequiredCount = 6;
+    const allDocumentsApproved = totalApprovedCount === 6;
+
+    // Evaluate central verification access decision across all 6 blocking documents
+    const verificationDecision = getVendorVerificationDecision({
+      ...vendorObj,
+      verificationDetails: {
+        ...vendorObj.verificationDetails,
+        documents: documentChecklist,
+      },
+    });
+
+    vendorObj.coreApprovedCount = coreApprovedCount;
+    vendorObj.coreRequiredCount = coreRequiredCount;
+    vendorObj.coreVerificationComplete = coreVerificationComplete;
+    vendorObj.totalApprovedCount = totalApprovedCount;
+    vendorObj.totalRequiredCount = totalRequiredCount;
+    vendorObj.allDocumentsApproved = allDocumentsApproved;
+    vendorObj.verificationDecision = verificationDecision;
+    vendorObj.verificationAccess = verificationDecision.verificationAccess;
+    vendorObj.verificationStatus = verificationDecision.verificationStatus;
+    vendorObj.documents = documentChecklist;
+    if (vendorObj.verificationDetails) {
+      vendorObj.verificationDetails.documents = documentChecklist;
+      vendorObj.verificationDetails.coreApprovedCount = coreApprovedCount;
+      vendorObj.verificationDetails.coreRequiredCount = coreRequiredCount;
+      vendorObj.verificationDetails.coreVerificationComplete = coreVerificationComplete;
+      vendorObj.verificationDetails.totalApprovedCount = totalApprovedCount;
+      vendorObj.verificationDetails.totalRequiredCount = totalRequiredCount;
+      vendorObj.verificationDetails.allDocumentsApproved = allDocumentsApproved;
+      vendorObj.verificationDetails.verificationDecision = verificationDecision;
     }
 
-    res.status(200).json({ vendor: vendorObj });
+    res.status(200).json({ vendor: vendorObj, verificationDecision });
   } catch (error) {
     console.error('[getVendorById] Error:', error);
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to fetch vendor' } });
@@ -1531,46 +1902,70 @@ export const reviewVendorApplication = async (req: AuthenticatedRequest, res: Re
   }
 };
 
-export const STANDARD_COMPLIANCE_META: Record<string, { title: string; category: string; description: string }> = {
+export const STANDARD_COMPLIANCE_META: Record<string, { title: string; category: string; section: string; required: boolean; description: string }> = {
   GST_CERTIFICATE: {
     title: 'GST Registration Certificate',
-    category: 'BUSINESS',
-    description: 'Mandatory GSTIN certificate issued by Central Board of Indirect Taxes and Customs.',
-  },
-  TRANSPORT_PERMIT: {
-    title: 'All India Goods Transport Permit',
-    category: 'BUSINESS',
-    description: 'State / National transport authority commercial logistics permit.',
-  },
-  TRANSIT_INSURANCE: {
-    title: 'Goods In-Transit Insurance Policy',
-    category: 'BUSINESS',
-    description: 'Indemnity policy protecting cargo and customer goods during transit.',
+    category: 'COMPANY',
+    section: 'COMPANY',
+    required: true,
+    description: 'Core business identity document required for company approval.',
   },
   BUSINESS_PAN: {
     title: 'Company / Business PAN Card',
-    category: 'BUSINESS',
-    description: 'Permanent Account Number issued by Income Tax Department.',
+    category: 'COMPANY',
+    section: 'COMPANY',
+    required: true,
+    description: 'Permanent Account Number registered with the Income Tax Department.',
   },
   REPRESENTATIVE_ID_PROOF: {
     title: 'Government Identity Proof',
     category: 'REPRESENTATIVE',
-    description: 'Official ID proof (Aadhaar, Passport, Driving Licence) of owner / representative.',
+    section: 'REPRESENTATIVE',
+    required: true,
+    description: 'Official government-issued identity proof (Aadhaar, Passport, Driving Licence) of owner / representative.',
   },
   REPRESENTATIVE_PHOTO: {
-    title: 'Owner / Representative Photo',
+    title: 'Representative Photo / Camera Capture',
     category: 'REPRESENTATIVE',
-    description: 'Biometric / live camera photograph of the owner or authorized representative.',
+    section: 'REPRESENTATIVE',
+    required: true,
+    description: 'Recent photograph of the business owner or authorized representative for identity verification.',
+  },
+  TRANSPORT_PERMIT: {
+    title: 'All India Goods Transport Permit',
+    category: 'OPERATIONAL',
+    section: 'OPERATIONAL',
+    required: false,
+    description: 'Commercial logistics transport permit (operational compliance; mandatory for operational permissions).',
+  },
+  TRANSIT_INSURANCE: {
+    title: 'Goods In-Transit Insurance Policy',
+    category: 'OPERATIONAL',
+    section: 'OPERATIONAL',
+    required: false,
+    description: 'Cargo and goods transit indemnity insurance (operational compliance; mandatory for operational permissions).',
   },
 };
 
-export const REQUIRED_COMPLIANCE_DOCS = [
+export const CORE_VERIFICATION_DOCS = [
   'GST_CERTIFICATE',
-  'TRANSPORT_PERMIT',
-  'TRANSIT_INSURANCE',
   'BUSINESS_PAN',
   'REPRESENTATIVE_ID_PROOF',
   'REPRESENTATIVE_PHOTO',
+];
+
+export const OPERATIONAL_COMPLIANCE_DOCS = [
+  'TRANSPORT_PERMIT',
+  'TRANSIT_INSURANCE',
+];
+
+export const REQUIRED_COMPLIANCE_DOCS = [
+  'GST_CERTIFICATE',
+  'BUSINESS_PAN',
+  'REPRESENTATIVE_ID_PROOF',
+  'REPRESENTATIVE_PHOTO',
+  'TRANSPORT_PERMIT',
+  'TRANSIT_INSURANCE',
 ];
 
 export const reviewVendorDocument = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -1702,8 +2097,17 @@ export const reviewVendorDocument = async (req: AuthenticatedRequest, res: Respo
     const changesRequestedCount = formattedDocs.filter((d: any) => d.status === 'CHANGES_REQUESTED').length;
     const rejectedCount = formattedDocs.filter((d: any) => d.status === 'REJECTED').length;
     const totalDocuments = formattedDocs.length;
-    const totalRequired = Math.max(REQUIRED_COMPLIANCE_DOCS.length, totalDocuments);
-    const compliancePercentage = totalRequired > 0 ? Math.round((approvedCount / totalRequired) * 100) : 0;
+    const coreApprovedCount = formattedDocs.filter(
+      (d: any) => CORE_VERIFICATION_DOCS.includes(d.type) && d.status === 'APPROVED'
+    ).length;
+    const coreRequiredCount = 4;
+    const coreVerificationComplete = coreApprovedCount === 4;
+    const totalRequired = 6;
+    const totalRequiredCount = 6;
+    const allDocumentsApproved = approvedCount === 6;
+    const compliancePercentage = Math.round((approvedCount / 6) * 100);
+
+    const verificationDecision = getVendorVerificationDecision(vendor);
 
     const companyDossier = {
       vendorId: vendor._id.toString(),
@@ -1714,7 +2118,17 @@ export const reviewVendorDocument = async (req: AuthenticatedRequest, res: Respo
       createdAt: vendor.createdAt,
       totalDocuments,
       totalRequired,
+      totalRequiredCount,
       approvedCount,
+      totalApprovedCount: approvedCount,
+      coreApprovedCount,
+      coreRequiredCount,
+      coreVerificationComplete,
+      allDocumentsApproved,
+      verificationDecision,
+      verificationAccess: verificationDecision.verificationAccess,
+      verificationStatus: verificationDecision.verificationStatus,
+      blockingItem: verificationDecision.blockingItem,
       pendingCount,
       changesRequestedCount,
       rejectedCount,
@@ -1732,6 +2146,7 @@ export const reviewVendorDocument = async (req: AuthenticatedRequest, res: Respo
       vendor,
       updatedDocument,
       companyDossier,
+      verificationDecision,
     });
   } catch (error) {
     console.error('[reviewVendorDocument] Error:', error);
@@ -1828,7 +2243,7 @@ export const toggleVendorSuspension = async (req: AuthenticatedRequest, res: Res
       return;
     }
 
-    const isSuspending = action === 'suspend' || suspend === true;
+    const isSuspending = action ? action === 'suspend' : (suspend !== undefined ? Boolean(suspend) : true);
     const targetStatus = isSuspending ? 'SUSPENDED' : 'APPROVED';
 
     const vendor = await Vendor.findByIdAndUpdate(
@@ -2586,7 +3001,9 @@ export const getAdminDocuments = async (req: AuthenticatedRequest, res: Response
       docs.forEach((d: any) => {
         const meta = STANDARD_META[d.type] || {
           title: d.type,
-          category: 'BUSINESS',
+          category: 'COMPANY',
+          section: 'COMPANY',
+          required: false,
           description: 'Platform verification document',
         };
 
@@ -2599,6 +3016,8 @@ export const getAdminDocuments = async (req: AuthenticatedRequest, res: Response
           type: d.type,
           title: meta.title,
           category: meta.category,
+          section: meta.section || meta.category,
+          required: Boolean(meta.required),
           description: meta.description,
           fileUrl: `/api/v1/admin/vendors/${vendor._id.toString()}/documents/${d.type}/view`,
           fileName: d.fileName || `${d.type.toLowerCase()}_document.pdf`,
@@ -2618,12 +3037,15 @@ export const getAdminDocuments = async (req: AuthenticatedRequest, res: Response
 
       // Calculate 100% genuine dynamic compliance stats per company
       const approvedCount = vendorDocs.filter((d: any) => d.status === 'APPROVED').length;
+      const coreApprovedCount = vendorDocs.filter((d: any) => CORE_VERIFICATION_DOCS.includes(d.type) && d.status === 'APPROVED').length;
+      const coreRequiredCount = 4;
+      const coreVerificationComplete = coreApprovedCount === 4;
       const pendingCount = vendorDocs.filter((d: any) => d.status === 'PENDING_REVIEW').length;
       const changesRequestedCount = vendorDocs.filter((d: any) => d.status === 'CHANGES_REQUESTED').length;
       const rejectedCount = vendorDocs.filter((d: any) => d.status === 'REJECTED').length;
       const totalDocuments = vendorDocs.length;
-      const totalRequired = Math.max(REQUIRED_DOC_TYPES.length, totalDocuments);
-      const compliancePercentage = totalRequired > 0 ? Math.round((approvedCount / totalRequired) * 100) : 0;
+      const totalRequired = 4;
+      const compliancePercentage = Math.round((coreApprovedCount / 4) * 100);
 
       companies.push({
         vendorId: vendor._id.toString(),
@@ -2635,6 +3057,9 @@ export const getAdminDocuments = async (req: AuthenticatedRequest, res: Response
         totalDocuments,
         totalRequired,
         approvedCount,
+        coreApprovedCount,
+        coreRequiredCount,
+        coreVerificationComplete,
         pendingCount,
         changesRequestedCount,
         rejectedCount,

@@ -24,7 +24,6 @@ import {
   UserCog,
   ShieldCheck,
 } from "lucide-react";
-import RolePermissionsDrawer from "./RolePermissionsDrawer";
 
 interface AdminSidebarProps {
   onClose?: () => void;
@@ -32,6 +31,7 @@ interface AdminSidebarProps {
 
 export const ADMIN_ROUTE_PERMISSIONS: Record<string, string | string[]> = {
   "/admin": "", // Always accessible
+  "/admin/my-permissions": "", // Always accessible for personal capabilities inspection
   "/admin/users": "users:view",
   "/admin/employees": "staff:view",
   "/admin/roles": "permissions:manage",
@@ -56,7 +56,6 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
   const [adminDepartment, setAdminDepartment] = useState<string>("Executive Governance");
   const [userPermissions, setUserPermissions] = useState<string[]>(["*"]);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const syncLiveUser = async () => {
     if (typeof window === "undefined") return;
@@ -133,11 +132,13 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
       const onFocus = () => syncLiveUser();
       window.addEventListener("focus", onFocus);
       window.addEventListener("admin-permissions-updated", onFocus);
+      window.addEventListener("permissions-updated", onFocus);
       const interval = setInterval(syncLiveUser, 30000);
 
       return () => {
         window.removeEventListener("focus", onFocus);
         window.removeEventListener("admin-permissions-updated", onFocus);
+        window.removeEventListener("permissions-updated", onFocus);
         clearInterval(interval);
       };
     }
@@ -170,10 +171,9 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
         { label: "Dashboard", href: "/admin", icon: LayoutDashboard, perm: "" },
         {
           label: "My Role & Permissions",
-          href: "#my-permissions",
+          href: "/admin/my-permissions",
           icon: ShieldCheck,
           perm: "",
-          isDrawerTrigger: true,
           badge: activePermsCount,
         },
       ],
@@ -265,32 +265,6 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
                     ? pathname === "/admin"
                     : pathname.startsWith(item.href);
 
-                if (item.isDrawerTrigger) {
-                  return (
-                    <button
-                      key={item.label}
-                      onClick={() => {
-                        setDrawerOpen(true);
-                        if (onClose) onClose();
-                      }}
-                      className="w-full group flex items-center justify-between px-3 py-1.5 rounded-xl text-xs transition-all text-[#1E293B] hover:text-[#2563EB] hover:shadow-neu-flat-sm border border-transparent hover:border-white/60 font-semibold cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <Icon
-                          size={15}
-                          className="shrink-0 text-emerald-600 group-hover:text-[#2563EB] transition-colors"
-                        />
-                        <span className="truncate leading-tight text-xs">{item.label}</span>
-                      </div>
-                      {item.badge && (
-                        <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-emerald-100/90 text-emerald-700 border border-emerald-200/60 shrink-0">
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                }
-
                 return (
                   <Link
                     key={item.label}
@@ -311,9 +285,17 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
                       />
                       <span className="truncate leading-tight text-xs">{item.label}</span>
                     </div>
-                    {isActive && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#0EA5E9] shrink-0" />
-                    )}
+
+                    <div className="flex items-center gap-1.5">
+                      {item.badge && (
+                        <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-emerald-100/90 text-emerald-700 border border-emerald-200/60 shrink-0">
+                          {item.badge}
+                        </span>
+                      )}
+                      {isActive && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-[#0EA5E9] shrink-0" />
+                      )}
+                    </div>
                   </Link>
                 );
               })}
@@ -325,19 +307,25 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
       {/* Palette 1 Integrated Footer */}
       <div className="p-3 border-t border-[#D9E2EC]/80 shrink-0 bg-[#EEF2F6] mt-auto">
         <div className="p-2.5 rounded-2xl bg-[#EEF2F6] shadow-neu-inset-sm border border-white/60 flex items-center justify-between">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-[#2563EB] to-[#0EA5E9] flex items-center justify-center text-white font-bold text-xs shadow-2xs shrink-0">
+          <Link
+            href="/admin/profile"
+            title="View Administrator Profile"
+            className="flex items-center gap-2.5 min-w-0 hover:opacity-80 transition group"
+          >
+            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-[#2563EB] to-[#0EA5E9] flex items-center justify-center text-white font-bold text-xs shadow-2xs shrink-0 group-hover:ring-2 group-hover:ring-[#2563EB]/40 transition">
               {adminDisplayName.charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-[#1E293B] truncate leading-tight">{adminDisplayName}</p>
+              <p className="text-xs font-semibold text-[#1E293B] truncate leading-tight group-hover:text-[#2563EB] transition">
+                {adminDisplayName}
+              </p>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-blue-100/80 text-blue-700 truncate max-w-[120px]">
                   {adminRole}
                 </span>
               </div>
             </div>
-          </div>
+          </Link>
           <button
             onClick={handleSignOut}
             title="Sign Out"
@@ -347,17 +335,6 @@ export default function AdminSidebar({ onClose }: AdminSidebarProps) {
           </button>
         </div>
       </div>
-
-      {/* Dynamic Role & Permissions Matrix Slide-over Drawer */}
-      <RolePermissionsDrawer
-        isOpen={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        currentUser={currentUser}
-        onUserRefreshed={(u) => {
-          setCurrentUser(u);
-          if (Array.isArray(u.permissions)) setUserPermissions(u.permissions);
-        }}
-      />
     </div>
   );
 }

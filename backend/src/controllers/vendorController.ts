@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { AuthenticatedRequest } from '../middlewares/auth.js';
+import { AuthenticatedRequest, invalidatePermissionsCache } from '../middlewares/auth.js';
 import { Vendor } from '../models/Vendor.js';
 import { User } from '../models/User.js';
 import { Booking } from '../models/Booking.js';
@@ -12,12 +12,18 @@ import { AuditLog } from '../models/AuditLog.js';
 import { Notification } from '../models/Notification.js';
 import { BookingStatus, VendorStatus } from '../types/index.js';
 import { bootstrapVendorOperations } from '../utils/seedOperations.js';
-import { sendCredentialsViaWhatsApp, generateSimpleCompanyEmail } from '../utils/whatsappService.js';
 import { createCrossNotification } from '../utils/notificationHelper.js';
+import { getVendorVerificationDecision } from '../middlewares/vendorAuth.js';
+import {
+  sendCredentialsViaWhatsApp,
+  generateSimpleCompanyEmail,
+  normalizePhoneForWhatsApp,
+} from '../utils/whatsappService.js';
 import fs from 'fs';
 import path from 'path';
 import {
   saveDocumentFile,
+  saveLogoFile,
   resolveDocumentMime,
   generateValidPdfBuffer,
 } from '../utils/fileStorage.js';
@@ -45,6 +51,11 @@ const logVendorAction = async (
   details?: Record<string, any>
 ) => {
   try {
+    const enrichedDetails: Record<string, any> = {
+      ...details,
+      timestamp: new Date().toISOString(),
+    };
+
     await AuditLog.create({
       actorId: new mongoose.Types.ObjectId(actorId),
       actorPhone: actorPhone || '',
@@ -52,16 +63,348 @@ const logVendorAction = async (
       targetType,
       targetId: String(targetId),
       reason,
-      details,
+      details: enrichedDetails,
     });
+
+    // If this action belongs to a vendor company, alert the Vendor Admin in real-time
+    if (enrichedDetails.vendorId) {
+      const actorName = enrichedDetails.actorName || actorPhone || 'Team Member';
+      const actorRole = enrichedDetails.actorRole || 'Staff';
+
+      let notifTitle = `Team Activity: ${actorName}`;
+      let notifMessage = reason;
+
+      if (action === 'STATUS_UPDATED') {
+        notifTitle = `Move #${String(targetId).slice(-6).toUpperCase()} Milestone Updated`;
+        notifMessage = `${actorName} (${actorRole}) advanced move status to ${enrichedDetails.newStatus || 'new milestone'}.`;
+      } else if (action === 'CREW_CONTACT_LOGGED') {
+        notifTitle = `Crew Contact: Move #${String(targetId).slice(-6).toUpperCase()}`;
+        notifMessage = `${actorName} contacted on-ground crew regarding vehicle halt. Note: ${enrichedDetails.note || reason}`;
+      } else if (action === 'CUSTOMER_DELAY_ALERT') {
+        notifTitle = `Customer Delay Notice: Move #${String(targetId).slice(-6).toUpperCase()}`;
+        notifMessage = `${actorName} notified customer about ${enrichedDetails.delayMinutes || 30}m delay: ${enrichedDetails.reason || reason}`;
+      }
+
+      await Notification.create({
+        recipientRole: 'vendor',
+        recipientVendorId: new mongoose.Types.ObjectId(enrichedDetails.vendorId),
+        actorId: new mongoose.Types.ObjectId(actorId),
+        actorName,
+        actorRole,
+        title: notifTitle,
+        message: notifMessage,
+        type: 'MOVE_UPDATE',
+        targetType: targetType as any,
+        targetId: String(targetId),
+        metadata: enrichedDetails,
+      }).catch((err) => console.warn('[Notification] Failed to create vendor admin notification:', err));
+    }
   } catch (err) {
     console.warn('[AuditLog] Failed to record vendor action:', err);
   }
 };
 
-// 1. Vendor Profile
+// 1. Vendor Profile (Personal context)
 export const getVendorProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  res.status(200).json({ vendor: req.vendor });
+  const vendor = req.vendor;
+  const decision = getVendorVerificationDecision(vendor);
+  const vendorObj = vendor.toObject ? vendor.toObject() : { ...vendor };
+  vendorObj.verificationAccess = decision.verificationAccess;
+  vendorObj.verificationStatus = decision.verificationStatus;
+  vendorObj.verificationReason = decision.reason;
+  vendorObj.blockingItem = decision.blockingItem;
+  vendorObj.approvedDocCount = decision.approvedCount;
+  vendorObj.requiredDocCount = decision.requiredCount;
+  res.status(200).json({ vendor: vendorObj, verificationDecision: decision });
+};
+
+// 1.1 Vendor Company Profile & Workforce Summary (Shared Single Source of Truth)
+export const getVendorCompanyProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendor = req.vendor;
+    const vendorId = vendor._id;
+
+    // Unambiguous workforce counts derived strictly from MongoDB User collection
+    const [totalEmployees, crewWorkers, activeEmployees] = await Promise.all([
+      User.countDocuments({ vendorId, accountStatus: { $ne: 'deleted' } }),
+      User.countDocuments({ vendorId, role: 'worker', accountStatus: { $ne: 'deleted' } }),
+      User.countDocuments({ vendorId, accountStatus: 'active' }),
+    ]);
+
+    const docs = vendor.verificationDetails?.documents || [];
+
+    const standardDocTypes = [
+      // Section 1: Company Verification (2 Core Documents)
+      {
+        type: 'GST_CERTIFICATE',
+        category: 'COMPANY',
+        section: 'COMPANY',
+        title: 'GST Registration Certificate',
+        description: 'Core business identity document required for company approval.',
+        required: true,
+      },
+      {
+        type: 'BUSINESS_PAN',
+        category: 'COMPANY',
+        section: 'COMPANY',
+        title: 'Company / Business PAN Card',
+        description: 'Permanent Account Number registered with the Income Tax Department.',
+        required: true,
+      },
+      // Section 2: Owner / Representative Verification (2 Core Documents)
+      {
+        type: 'REPRESENTATIVE_ID_PROOF',
+        category: 'REPRESENTATIVE',
+        section: 'REPRESENTATIVE',
+        title: 'Government Identity Proof',
+        description: 'Official government-issued identity proof (Aadhaar, Passport, Driving Licence, or Other) of the business owner or authorized representative.',
+        required: true,
+        supportedIdTypes: ['Aadhaar', 'Passport', 'Driving Licence', 'Voter ID', 'Other'],
+      },
+      {
+        type: 'REPRESENTATIVE_PHOTO',
+        category: 'REPRESENTATIVE',
+        section: 'REPRESENTATIVE',
+        title: 'Representative Photo / Camera Capture',
+        description: 'Recent photograph of the business owner or authorized representative for identity verification.',
+        required: true,
+      },
+      // Section 3: Operational Compliance (Mandatory for Operational Permissions)
+      {
+        type: 'TRANSPORT_PERMIT',
+        category: 'OPERATIONAL',
+        section: 'OPERATIONAL',
+        title: 'All India Goods Transport Permit',
+        description: 'Commercial logistics transport permit (operational compliance; mandatory for operational permissions).',
+        required: false,
+      },
+      {
+        type: 'TRANSIT_INSURANCE',
+        category: 'OPERATIONAL',
+        section: 'OPERATIONAL',
+        title: 'Goods In-Transit Insurance Policy',
+        description: 'Cargo transit indemnity policy protecting customer household assets (operational compliance; mandatory for operational permissions).',
+        required: false,
+      },
+    ];
+
+    const documentChecklist = standardDocTypes.map((std) => {
+      const submitted = docs.find((d: any) => d.type === std.type);
+      return {
+        ...std,
+        status: submitted?.status || 'NOT_SUBMITTED',
+        fileUrl: submitted ? `/api/v1/vendor/documents/${std.type}/view` : null,
+        fileName: submitted?.fileName || null,
+        fileSize: submitted?.fileSize || null,
+        mimeType: submitted?.mimeType || 'application/pdf',
+        idType: submitted?.idType || null,
+        maskedIdNumber: submitted?.maskedIdNumber || null,
+        submittedAt: submitted?.submittedAt || null,
+        reviewedAt: submitted?.reviewedAt || null,
+        feedback: submitted?.feedback || null,
+      };
+    });
+
+    const coreApprovedCount = documentChecklist.filter(
+      (d) => ['GST_CERTIFICATE', 'BUSINESS_PAN', 'REPRESENTATIVE_ID_PROOF', 'REPRESENTATIVE_PHOTO'].includes(d.type) && d.status === 'APPROVED'
+    ).length;
+    const coreRequiredCount = 4;
+    const coreVerificationComplete = coreApprovedCount === 4;
+    const totalApprovedCount = documentChecklist.filter((d) => d.status === 'APPROVED').length;
+    const totalRequiredCount = 6;
+    const allDocumentsApproved = totalApprovedCount === 6;
+
+    const vendorPlain = vendor.toObject ? vendor.toObject() : { ...vendor };
+    const decision = getVendorVerificationDecision({
+      ...vendorPlain,
+      verificationDetails: {
+        ...vendorPlain.verificationDetails,
+        documents: documentChecklist,
+      },
+    });
+
+    const isOwner = req.user?.role === 'vendor' || req.user?.id === vendor.ownerId?.toString();
+    const userPerms: string[] = (req.user as any)?.permissions || [];
+    const canEdit = isOwner || userPerms.includes('*') || userPerms.includes('company_profile:edit') || userPerms.includes('company_profile:manage');
+    const canUploadDocs = vendor.status !== 'SUSPENDED' && (isOwner || userPerms.includes('*') || userPerms.includes('company_profile:upload_documents') || userPerms.includes('documents:upload'));
+
+    res.status(200).json({
+      vendor: {
+        _id: vendor._id,
+        businessName: vendor.businessName,
+        logoUrl: vendor.logoUrl || null,
+        contactEmail: vendor.contactEmail || '',
+        contactPhone: vendor.contactPhone,
+        status: vendor.status,
+        serviceAreas: vendor.serviceAreas || [],
+        servicesOffered: vendor.servicesOffered || [],
+        createdAt: vendor.createdAt,
+      },
+      workforce: {
+        totalEmployees,
+        crewWorkers,
+        activeEmployees,
+      },
+      verification: {
+        status: vendor.status,
+        verificationStatus: decision.verificationStatus,
+        access: decision.verificationAccess,
+        blockingItem: decision.blockingItem,
+        blockingReason: decision.reason,
+        lastReviewedAt: vendor.verificationDetails?.lastReviewedAt || null,
+        adminFeedback: vendor.verificationDetails?.reviewReason || null,
+        suspensionReason: vendor.verificationDetails?.suspensionReason || null,
+        coreApprovedCount,
+        coreRequiredCount,
+        coreVerificationComplete,
+        totalApprovedCount,
+        totalRequiredCount: 6,
+        allDocumentsApproved,
+        documents: documentChecklist,
+      },
+      canEdit,
+      canUploadDocs,
+    });
+  } catch (error: any) {
+    console.error('[getVendorCompanyProfile] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to fetch vendor company profile' } });
+  }
+};
+
+// 1.2 Update Vendor Company Profile (Operational fields only; locks legal businessName once approved)
+export const updateVendorCompanyProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendor = req.vendor;
+    if (vendor.status === 'SUSPENDED') {
+      res.status(403).json({
+        error: { code: 'VENDOR_SUSPENDED', message: 'Suspended companies cannot modify profile information.' },
+      });
+      return;
+    }
+
+    const { businessName, contactPhone, contactEmail, serviceAreas, servicesOffered } = req.body;
+
+    // Protection for legally sensitive information:
+    // Once APPROVED, changing the legal business name is locked on self-service to prevent regulatory invalidation.
+    if (businessName && businessName.trim() !== vendor.businessName) {
+      if (vendor.status === 'APPROVED') {
+        res.status(400).json({
+          error: {
+            code: 'LEGAL_NAME_LOCKED',
+            message: 'Legal business entity name cannot be changed directly after verification approval. Please submit an administrative inquiry.',
+          },
+        });
+        return;
+      }
+      vendor.businessName = businessName.trim();
+    }
+
+    if (contactPhone) vendor.contactPhone = contactPhone.trim();
+    if (contactEmail !== undefined) vendor.contactEmail = contactEmail.trim();
+    if (Array.isArray(serviceAreas)) vendor.serviceAreas = serviceAreas;
+    if (Array.isArray(servicesOffered)) vendor.servicesOffered = servicesOffered;
+
+    await vendor.save();
+
+    await logVendorAction(
+      req.user!.id,
+      req.user?.phone,
+      'VENDOR_PROFILE_UPDATED',
+      'Vendor',
+      vendor._id.toString(),
+      `Updated company profile for ${vendor.businessName}`,
+      { contactPhone, contactEmail, serviceAreas, servicesOffered }
+    );
+
+    res.status(200).json({
+      message: 'Company profile updated successfully',
+      vendor: {
+        _id: vendor._id,
+        businessName: vendor.businessName,
+        logoUrl: vendor.logoUrl || null,
+        contactEmail: vendor.contactEmail || '',
+        contactPhone: vendor.contactPhone,
+        status: vendor.status,
+        serviceAreas: vendor.serviceAreas,
+        servicesOffered: vendor.servicesOffered,
+      },
+    });
+  } catch (error: any) {
+    console.error('[updateVendorCompanyProfile] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to update company profile' } });
+  }
+};
+
+// 1.3 Upload Company Logo
+export const uploadVendorLogo = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendor = req.vendor;
+    if (vendor.status === 'SUSPENDED') {
+      res.status(403).json({ error: { code: 'VENDOR_SUSPENDED', message: 'Suspended vendors cannot update company logo.' } });
+      return;
+    }
+
+    const { file, fileUrl, fileName } = req.body;
+    const payload = file || fileUrl;
+    if (!payload) {
+      res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Logo file payload is required.' } });
+      return;
+    }
+
+    const saved = await saveLogoFile(vendor._id.toString(), payload, fileName);
+    vendor.logoUrl = saved.logoUrl;
+    await vendor.save();
+
+    await logVendorAction(
+      req.user!.id,
+      req.user?.phone,
+      'VENDOR_LOGO_UPDATED',
+      'Vendor',
+      vendor._id.toString(),
+      `Updated company logo for ${vendor.businessName}`,
+      { logoUrl: saved.logoUrl }
+    );
+
+    res.status(200).json({
+      message: 'Company logo uploaded successfully',
+      logoUrl: saved.logoUrl,
+    });
+  } catch (error: any) {
+    console.error('[uploadVendorLogo] Error:', error);
+    res.status(400).json({ error: { code: 'LOGO_UPLOAD_FAILED', message: error.message || 'Failed to upload logo' } });
+  }
+};
+
+// 1.4 View / Stream Company Logo
+export const viewVendorLogo = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const targetVendorId = req.params.vendorId || req.vendor?._id;
+    if (!targetVendorId) {
+      res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Vendor ID is required.' } });
+      return;
+    }
+    const dir = path.resolve(process.cwd(), 'uploads', 'logos', targetVendorId.toString());
+    if (!fs.existsSync(dir)) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No logo uploaded for this company.' } });
+      return;
+    }
+
+    const files = await fs.promises.readdir(dir);
+    if (!files || files.length === 0) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No logo file found.' } });
+      return;
+    }
+
+    const latestFile = files.sort().reverse()[0];
+    const filePath = path.join(dir, latestFile);
+    const mime = resolveDocumentMime(latestFile);
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error: any) {
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to stream logo' } });
+  }
 };
 
 export const getVendorCompanies = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -69,7 +412,7 @@ export const getVendorCompanies = async (req: AuthenticatedRequest, res: Respons
     let companies: any[] = [];
     if (req.user?.role === 'admin') {
       companies = await Vendor.find({})
-        .select('_id businessName contactPhone contactEmail status serviceAreas servicesOffered createdAt')
+        .select('_id businessName contactPhone contactEmail status serviceAreas servicesOffered createdAt logoUrl')
         .sort({ businessName: 1 });
     } else if (req.user?.role === 'vendor') {
       companies = await Vendor.find({
@@ -77,7 +420,7 @@ export const getVendorCompanies = async (req: AuthenticatedRequest, res: Respons
           { ownerId: req.user.id },
           ...(req.user.phone ? [{ contactPhone: req.user.phone }] : []),
         ],
-      }).select('_id businessName contactPhone contactEmail status serviceAreas servicesOffered createdAt');
+      }).select('_id businessName contactPhone contactEmail status serviceAreas servicesOffered createdAt logoUrl');
       if (companies.length === 0 && req.vendor) {
         companies = [req.vendor];
       }
@@ -116,9 +459,9 @@ export const registerVendor = async (req: AuthenticatedRequest, res: Response): 
 
     const vendor = await Vendor.create({
       ownerId,
-      businessName,
-      contactPhone,
-      contactEmail,
+      businessName: businessName.trim(),
+      contactPhone: contactPhone.trim(),
+      contactEmail: contactEmail ? contactEmail.trim().toLowerCase() : undefined,
       serviceAreas: serviceAreas || [],
       servicesOffered: servicesOffered || ['Packing', 'Loading', 'Transport', 'Unloading'],
       status: 'PENDING_REVIEW',
@@ -128,10 +471,46 @@ export const registerVendor = async (req: AuthenticatedRequest, res: Response): 
       },
     });
 
+    // Update owner user record to link vendorId and set role to vendor
+    if (ownerId) {
+      await User.findByIdAndUpdate(ownerId, {
+        $set: {
+          role: 'vendor',
+          vendorId: vendor._id,
+        },
+      });
+      invalidatePermissionsCache(ownerId);
+    }
+
+    // Alert admin team of new vendor registration
+    await createCrossNotification({
+      actorId: ownerId,
+      actorName: businessName.trim(),
+      actorRole: 'vendor',
+      title: 'New Vendor Registration',
+      message: `Vendor company "${businessName.trim()}" registered on the platform and awaits verification.`,
+      type: 'GENERAL',
+      targetType: 'Vendor',
+      targetId: vendor._id.toString(),
+      vendorId: vendor._id,
+      notifyAdmin: true,
+      notifyVendor: false,
+    });
+
     await logVendorAction(ownerId!, req.user?.phone, 'VENDOR_REGISTERED', 'Vendor', vendor._id.toString(), 'Vendor company self-registered');
 
-    res.status(201).json({ vendor });
+    // Honest provider check for onboarding email
+    const smtpConfigured = Boolean(process.env.SMTP_HOST || process.env.SENDGRID_API_KEY);
+    const providerStatus = smtpConfigured ? 'dispatched' : 'pending_provider_configuration';
+
+    res.status(201).json({
+      vendor,
+      onboardingStatus: 'PENDING_REVIEW',
+      providerStatus,
+      message: 'Vendor company registered successfully. Please proceed to upload required verification documents.',
+    });
   } catch (error) {
+    console.error('[registerVendor] Error:', error);
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to register vendor company' } });
   }
 };
@@ -191,12 +570,35 @@ export const getVendorDashboard = async (req: AuthenticatedRequest, res: Respons
       distributions[s._id] = s.count;
     });
 
-    // E. Recent 5 Bookings
-    const recentBookings = await Booking.find({ vendorId })
+    // Operational scope resolution for dashboard telemetry
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    const recentBookingQuery: any = { vendorId };
+    if (!scope.isCompanyWide && scope.bookingIds.length > 0) {
+      recentBookingQuery._id = { $in: scope.bookingIds.map((bId) => new mongoose.Types.ObjectId(bId)) };
+    } else if (!scope.isCompanyWide && scope.bookingIds.length === 0) {
+      recentBookingQuery._id = null;
+    }
+
+    // E. Recent 5 Bookings (scoped)
+    const recentBookings = await Booking.find(recentBookingQuery)
       .sort({ createdAt: -1 })
       .limit(5)
       .populate('customerId', 'displayName phone')
       .populate('requestId');
+
+    // Card 3: Real operational supervision metrics derived from MongoDB
+    const [operationalManagersCount, driversCrewCount] = await Promise.all([
+      User.countDocuments({
+        vendorId,
+        employeeRole: { $in: ['operations', 'operational_manager', 'manager', 'fleet_supervisor', 'dispatch_coordinator'] },
+        accountStatus: 'active',
+      }),
+      User.countDocuments({
+        vendorId,
+        employeeRole: 'worker',
+        accountStatus: 'active',
+      }),
+    ]);
 
     res.status(200).json({
       stats: {
@@ -209,6 +611,10 @@ export const getVendorDashboard = async (req: AuthenticatedRequest, res: Respons
         totalVehicles,
         availableVehicles,
         busyVehicles: busyVehicleIds.size,
+        operationalManagersCount,
+        driversCrewCount,
+        supervisedMovesCount: scope.isCompanyWide ? activeBookings : scope.bookingIds.length,
+        totalSupervisedStaff: scope.isCompanyWide ? totalWorkers : scope.crewIds.length,
         documentStatus: req.vendor.status,
       },
       distributions,
@@ -225,7 +631,7 @@ export const getVendorDashboard = async (req: AuthenticatedRequest, res: Respons
 export const getVendorEmployees = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const vendorId = req.vendor._id;
-    const { search, role, status, page = 1, limit = 20 } = req.query;
+    const { search, role, status, reportsTo, supervisorId, page = 1, limit = 20 } = req.query;
 
     const query: any = { vendorId };
 
@@ -233,6 +639,8 @@ export const getVendorEmployees = async (req: AuthenticatedRequest, res: Respons
       query.$or = [
         { displayName: { $regex: String(search), $options: 'i' } },
         { phone: { $regex: String(search), $options: 'i' } },
+        { username: { $regex: String(search), $options: 'i' } },
+        { email: { $regex: String(search), $options: 'i' } },
       ];
     }
 
@@ -246,14 +654,37 @@ export const getVendorEmployees = async (req: AuthenticatedRequest, res: Respons
       query.accountStatus = { $ne: 'deleted' };
     }
 
+    if (supervisorId) {
+      query.reportsTo = new mongoose.Types.ObjectId(String(supervisorId));
+    } else if (reportsTo && reportsTo !== 'ALL') {
+      if (reportsTo === 'none') {
+        query.reportsTo = { $in: [null, undefined] };
+      } else {
+        query.reportsTo = new mongoose.Types.ObjectId(String(reportsTo));
+      }
+    }
+
     const pageNum = Math.max(1, parseInt(String(page), 10));
     const limitNum = Math.min(100, Math.max(1, parseInt(String(limit), 10)));
     const skip = (pageNum - 1) * limitNum;
 
-    const [total, employees] = await Promise.all([
+    const [total, employees, reportCounts] = await Promise.all([
       User.countDocuments(query),
-      User.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum),
+      User.find(query)
+        .populate('reportsTo', 'displayName phone employeeRole email username')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+      User.aggregate([
+        { $match: { vendorId, reportsTo: { $exists: true, $ne: null } } },
+        { $group: { _id: '$reportsTo', count: { $sum: 1 } } },
+      ]),
     ]);
+
+    const reportCountMap: Record<string, number> = {};
+    reportCounts.forEach((rc) => {
+      reportCountMap[rc._id.toString()] = rc.count;
+    });
 
     // Check who is busy
     const activeMoves = await Booking.find({
@@ -270,11 +701,16 @@ export const getVendorEmployees = async (req: AuthenticatedRequest, res: Respons
       }
     });
 
-    const enrichedEmployees = employees.map((emp) => ({
-      ...emp.toObject(),
-      availability: busyWorkerMap[emp._id.toString()] ? 'ON_MOVE' : 'AVAILABLE',
-      activeBookingId: busyWorkerMap[emp._id.toString()] || null,
-    }));
+    const enrichedEmployees = employees.map((emp) => {
+      const obj = emp.toObject();
+      return {
+        ...obj,
+        companyName: req.vendor?.companyName || req.vendor?.businessName || 'Registered Moving Carrier',
+        availability: busyWorkerMap[emp._id.toString()] ? 'ON_MOVE' : 'AVAILABLE',
+        activeBookingId: busyWorkerMap[emp._id.toString()] || null,
+        directReportsCount: reportCountMap[emp._id.toString()] || 0,
+      };
+    });
 
     res.status(200).json({
       employees: enrichedEmployees,
@@ -287,10 +723,144 @@ export const getVendorEmployees = async (req: AuthenticatedRequest, res: Respons
   }
 };
 
+// Server-Side Supervision & Hierarchy Validation (Correction 4)
+export async function validateReportsTo(
+  targetEmployeeId: string | undefined,
+  reportsToId: string | undefined,
+  vendorId: mongoose.Types.ObjectId
+): Promise<{ valid: boolean; error?: string }> {
+  if (!reportsToId || reportsToId === 'none' || reportsToId === '') return { valid: true };
+
+  if (!mongoose.isValidObjectId(reportsToId)) {
+    return { valid: false, error: 'Validation Error: Invalid supervisor ID format.' };
+  }
+
+  // 1. Prevent self-reporting
+  if (targetEmployeeId && String(targetEmployeeId) === String(reportsToId)) {
+    return { valid: false, error: 'Validation Error: An employee cannot report to themselves.' };
+  }
+
+  // 2. Must belong to the same vendor
+  const manager = await User.findOne({ _id: reportsToId, vendorId });
+  if (!manager) {
+    return { valid: false, error: 'Validation Error: The designated supervisor was not found or does not belong to your company.' };
+  }
+
+  // 3. Prevent invalid/circular hierarchy
+  if (targetEmployeeId) {
+    let currentId: string | undefined = manager.reportsTo?.toString();
+    const visited = new Set<string>([String(targetEmployeeId)]);
+    while (currentId) {
+      if (visited.has(currentId)) {
+        return { valid: false, error: 'Validation Error: Circular reporting chain detected. A supervisor cannot report to someone under them.' };
+      }
+      visited.add(currentId);
+      const nextMgr: any = await User.findById(currentId).select('reportsTo');
+      currentId = nextMgr?.reportsTo?.toString();
+    }
+  }
+
+  return { valid: true };
+}
+
+// Operational Scope Resolver for Scoped Employees vs. Company-Wide Admins
+export interface EmployeeOperationalScope {
+  isCompanyWide: boolean;
+  crewIds: string[];
+  vehicleIds: string[];
+  bookingIds: string[];
+  directReportIds: string[];
+}
+
+export const resolveEmployeeOperationalScope = async (
+  user: any,
+  vendorId: mongoose.Types.ObjectId
+): Promise<EmployeeOperationalScope> => {
+  if (!user) {
+    return { isCompanyWide: false, crewIds: [], vehicleIds: [], bookingIds: [], directReportIds: [] };
+  }
+
+  // 1. Company-wide authority: Vendor Owner, Admin, or designated Vendor Admin
+  const isVendorOwner =
+    user.role === 'vendor' ||
+    user.role === 'admin' ||
+    user.employeeRole === 'vendor_admin';
+
+  if (isVendorOwner) {
+    return {
+      isCompanyWide: true,
+      crewIds: [],
+      vehicleIds: [],
+      bookingIds: [],
+      directReportIds: [],
+    };
+  }
+
+  const userId = user._id ? user._id.toString() : user.id;
+
+  // 2. Direct reports working under this supervisor
+  const directReports = await User.find({
+    reportsTo: userId,
+    vendorId,
+    accountStatus: { $ne: 'deleted' },
+  }).select('_id');
+  const directReportIds = directReports.map((d) => d._id.toString());
+
+  // 3. Explicitly assigned crew from user document
+  const dbUser = await User.findById(userId).select('assignedScope');
+  const explicitCrewIds = (dbUser?.assignedScope?.crew || []).map((c: any) => c.toString());
+
+  // Combined crew: self + direct reports + explicit crew
+  const allCrewIds = Array.from(
+    new Set([String(userId), ...directReportIds, ...explicitCrewIds])
+  );
+
+  // 4. Explicit moves from user document
+  const explicitBookingIds = (dbUser?.assignedScope?.moves || []).map((m: any) => m.toString());
+
+  // 5. Find all bookings assigned to this coordinator OR where any supervised crew is assigned
+  const scopedBookings = await Booking.find({
+    vendorId,
+    $or: [
+      { assignedCoordinatorId: userId },
+      { assignedWorkers: { $in: allCrewIds.map((id) => new mongoose.Types.ObjectId(id)) } },
+      { _id: { $in: explicitBookingIds.filter((bId: string) => mongoose.Types.ObjectId.isValid(bId)).map((id) => new mongoose.Types.ObjectId(id)) } },
+    ],
+  }).select('_id assignedVehicleId assignedWorkers');
+
+  const bookingIds = Array.from(
+    new Set([...scopedBookings.map((b) => b._id.toString()), ...explicitBookingIds])
+  );
+
+  // 6. Vehicles: from assigned bookings + explicit vehicles
+  const bookingVehicleIds = scopedBookings
+    .map((b) => b.assignedVehicleId)
+    .filter(Boolean) as string[];
+  const explicitVehicles = dbUser?.assignedScope?.vehicles || [];
+  const vehicleIds = Array.from(new Set([...bookingVehicleIds, ...explicitVehicles]));
+
+  return {
+    isCompanyWide: false,
+    crewIds: allCrewIds,
+    vehicleIds,
+    bookingIds,
+    directReportIds,
+  };
+};
+
 export const createVendorEmployee = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const vendorId = req.vendor._id;
-    const { phone, displayName, employeeRole = 'worker', skills = [], permissions = [] } = req.body;
+    const {
+      phone,
+      displayName,
+      employeeRole = 'worker',
+      department = 'Operations',
+      reportsTo,
+      skills = [],
+      permissions = [],
+      assignedScope,
+    } = req.body;
 
     if (!phone || !displayName) {
       res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Phone number and employee name are required' } });
@@ -299,6 +869,31 @@ export const createVendorEmployee = async (req: AuthenticatedRequest, res: Respo
 
     const cleanPhone = String(phone).trim();
     const cleanName = String(displayName).trim();
+
+    // Enforce permission:manage when attempting to set custom permissions
+    if (Array.isArray(permissions) && permissions.length > 0) {
+      const isOwner = req.user?.role === 'vendor' || (req.vendor?.ownerId && req.vendor.ownerId.toString() === req.user?.id);
+      const { resolveUserPermissions } = await import('./authController.js');
+      const callerPerms = await resolveUserPermissions(req.user);
+      if (!isOwner && !callerPerms.includes('permissions:manage') && !callerPerms.includes('*')) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have authorization to assign custom permission overrides to employees.',
+          },
+        });
+        return;
+      }
+    }
+
+    // Validate reportsTo hierarchy server-side (Correction 4)
+    if (reportsTo && reportsTo !== 'none') {
+      const hierarchyCheck = await validateReportsTo(undefined, reportsTo, vendorId);
+      if (!hierarchyCheck.valid) {
+        res.status(400).json({ error: { code: 'INVALID_HIERARCHY', message: hierarchyCheck.error } });
+        return;
+      }
+    }
 
     // Check phone by exact string or common formatted variants
     const digitsOnly = cleanPhone.replace(/\D/g, '');
@@ -318,15 +913,45 @@ export const createVendorEmployee = async (req: AuthenticatedRequest, res: Respo
         ...(digitsOnly.length >= 10 ? [{ phone: { $regex: new RegExp(`${digitsOnly.slice(-10)}$`) } }] : []),
       ],
     });
+
     if (existing) {
-      const existingName = existing.displayName ? ` (${existing.displayName})` : '';
-      res.status(409).json({
-        error: {
-          code: 'PHONE_EXISTS',
-          message: `A user account with phone number "${cleanPhone}" already exists${existingName}. Please use a different phone number.`,
-        },
-      });
-      return;
+      // 1. Root / Platform Administrator cannot be added as vendor employee
+      if (existing.role === 'admin') {
+        res.status(409).json({
+          error: {
+            code: 'PHONE_EXISTS',
+            message: `Phone number "${cleanPhone}" is registered to a platform administrator and cannot be registered as a carrier employee.`,
+          },
+        });
+        return;
+      }
+
+      // 2. Already an employee or owner of THIS SAME company
+      if (existing.vendorId && existing.vendorId.toString() === req.vendor._id.toString() && existing.accountStatus !== 'deleted') {
+        res.status(409).json({
+          error: {
+            code: 'PHONE_EXISTS',
+            message: `An employee with phone number "${cleanPhone}" already exists in your company roster (${existing.displayName || existing.username}).`,
+          },
+        });
+        return;
+      }
+
+      // 3. Registered to ANOTHER vendor — check if that other vendor is active/approved
+      if (existing.vendorId && existing.vendorId.toString() !== req.vendor._id.toString()) {
+        const otherVendor = await Vendor.findById(existing.vendorId);
+        if (otherVendor && otherVendor.status === 'APPROVED') {
+          res.status(409).json({
+            error: {
+              code: 'PHONE_EXISTS',
+              message: `This phone number is registered to an active carrier company (${otherVendor.businessName}). An employee cannot be concurrently assigned to two active logistics providers.`,
+            },
+          });
+          return;
+        }
+        // If otherVendor was REJECTED (e.g. ABC Logistic) or SUSPENDED/not found,
+        // that vendor application is dead/rejected. This person is free to be hired by req.vendor!
+      }
     }
 
     // 1. Generate unique username from employee name
@@ -337,7 +962,10 @@ export const createVendorEmployee = async (req: AuthenticatedRequest, res: Respo
       .replace(/^\.|\.$/g, '') || 'mover';
 
     let username = baseUsername;
-    const userWithSameName = await User.findOne({ username });
+    const userWithSameName = await User.findOne({
+      username,
+      ...(existing ? { _id: { $ne: existing._id } } : {}),
+    });
     if (userWithSameName) {
       username = `${baseUsername}.${Math.floor(100 + Math.random() * 900)}`;
     }
@@ -356,22 +984,70 @@ export const createVendorEmployee = async (req: AuthenticatedRequest, res: Respo
       req.vendor.customRoles?.find((r: any) => r.id === employeeRole)?.name ||
       employeeRole;
 
-    const employee = await User.create({
-      phone: cleanPhone,
-      username,
-      email,
-      password: hashedPassword,
-      mustChangePassword: true,
-      plainTempPassword: defaultPassword,
-      displayName: cleanName,
-      role: 'worker',
-      employeeRole,
-      vendorId,
-      accountStatus: 'active',
-      skills: Array.isArray(skills) ? skills : [],
-      permissions: Array.isArray(permissions) && permissions.length > 0 ? permissions : undefined,
-      verifiedAt: new Date(),
-    });
+    let employee;
+    if (existing) {
+      // Reassign / onboard existing user (e.g. from rejected vendor application or customer) into this vendor's employee roster
+      existing.phone = cleanPhone;
+      existing.username = username;
+      existing.email = email;
+      existing.password = hashedPassword;
+      existing.mustChangePassword = true;
+      existing.plainTempPassword = defaultPassword;
+      existing.displayName = cleanName;
+      existing.role = 'worker';
+      existing.employeeRole = employeeRole;
+      existing.department = department || 'Operations';
+      existing.reportsTo = reportsTo && reportsTo !== 'none' ? new mongoose.Types.ObjectId(reportsTo) : undefined;
+      existing.vendorId = vendorId;
+      existing.accountStatus = 'active';
+      existing.skills = Array.isArray(skills) ? skills : [];
+      existing.permissions = Array.isArray(permissions) && permissions.length > 0 ? permissions : undefined;
+      if (assignedScope) {
+        existing.assignedScope = {
+          vehicles: Array.isArray(assignedScope.vehicles) ? assignedScope.vehicles : [],
+          crew: Array.isArray(assignedScope.crew)
+            ? assignedScope.crew.map((c: string) => new mongoose.Types.ObjectId(c))
+            : [],
+          moves: Array.isArray(assignedScope.moves)
+            ? assignedScope.moves.map((m: string) => new mongoose.Types.ObjectId(m))
+            : [],
+        };
+      }
+      existing.verifiedAt = new Date();
+      await existing.save();
+      employee = existing;
+    } else {
+      employee = await User.create({
+        phone: cleanPhone,
+        username,
+        email,
+        password: hashedPassword,
+        mustChangePassword: true,
+        plainTempPassword: defaultPassword,
+        displayName: cleanName,
+        role: 'worker',
+        adminRole: undefined,
+        employeeRole,
+        department: department || 'Operations',
+        reportsTo: reportsTo && reportsTo !== 'none' ? new mongoose.Types.ObjectId(reportsTo) : undefined,
+        vendorId,
+        accountStatus: 'active',
+        skills: Array.isArray(skills) ? skills : [],
+        permissions: Array.isArray(permissions) && permissions.length > 0 ? permissions : undefined,
+        assignedScope: assignedScope
+          ? {
+              vehicles: Array.isArray(assignedScope.vehicles) ? assignedScope.vehicles : [],
+              crew: Array.isArray(assignedScope.crew)
+                ? assignedScope.crew.map((c: string) => new mongoose.Types.ObjectId(c))
+                : [],
+              moves: Array.isArray(assignedScope.moves)
+                ? assignedScope.moves.map((m: string) => new mongoose.Types.ObjectId(m))
+                : [],
+            }
+          : undefined,
+        verifiedAt: new Date(),
+      });
+    }
 
     // 5. Dispatch WhatsApp notification with credentials
     let waResult: any = null;
@@ -396,7 +1072,15 @@ export const createVendorEmployee = async (req: AuthenticatedRequest, res: Respo
       'User',
       employee._id.toString(),
       `Added crew member ${cleanName} (${roleName}) - WhatsApp credentials dispatched`,
-      { vendorId: vendorId.toString(), role: employeeRole, username, email }
+      {
+        vendorId: vendorId.toString(),
+        role: employeeRole,
+        username,
+        email,
+        phone: cleanPhone,
+        department,
+        permissionsCount: employee.permissions?.length || 0,
+      }
     );
 
     res.status(201).json({
@@ -490,7 +1174,7 @@ export const updateVendorEmployee = async (req: AuthenticatedRequest, res: Respo
   try {
     const vendorId = req.vendor._id;
     const { id } = req.params;
-    const { displayName, employeeRole, skills, accountStatus, permissions } = req.body;
+    const { displayName, employeeRole, skills, accountStatus, permissions, permissionOverrides, department, reportsTo, assignedScope } = req.body;
 
     const employee = await User.findOne({ _id: id, vendorId });
     if (!employee) {
@@ -498,13 +1182,86 @@ export const updateVendorEmployee = async (req: AuthenticatedRequest, res: Respo
       return;
     }
 
+    const isSelf = req.user?.id === String(id);
+    const isOwner = req.user?.role === 'vendor' || (req.vendor?.ownerId && req.vendor.ownerId.toString() === req.user?.id);
+
+    // Self-escalation prevention: employees cannot alter their own roles, permissions, or active status
+    if (isSelf) {
+      if (employeeRole !== undefined || permissions !== undefined || permissionOverrides !== undefined || accountStatus !== undefined) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You cannot alter your own role, permissions, or account status.',
+          },
+        });
+        return;
+      }
+    }
+
+    // Updating permissions or overrides requires permissions:manage authorization
+    if (permissions !== undefined || permissionOverrides !== undefined) {
+      const { resolveUserPermissions } = await import('./authController.js');
+      const callerPerms = await resolveUserPermissions(req.user);
+      if (!isOwner && !callerPerms.includes('permissions:manage') && !callerPerms.includes('*')) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to modify employee permissions.',
+          },
+        });
+        return;
+      }
+    }
+
+    if (reportsTo !== undefined) {
+      if (reportsTo && reportsTo !== 'none') {
+        const hierarchyCheck = await validateReportsTo(String(id), reportsTo, vendorId);
+        if (!hierarchyCheck.valid) {
+          res.status(400).json({ error: { code: 'INVALID_HIERARCHY', message: hierarchyCheck.error } });
+          return;
+        }
+        employee.reportsTo = new mongoose.Types.ObjectId(reportsTo);
+      } else {
+        employee.reportsTo = undefined;
+      }
+    }
+
+    if (assignedScope !== undefined) {
+      employee.assignedScope = {
+        vehicles: Array.isArray(assignedScope.vehicles) ? assignedScope.vehicles : [],
+        crew: Array.isArray(assignedScope.crew)
+          ? assignedScope.crew.map((c: string) => new mongoose.Types.ObjectId(c))
+          : [],
+        moves: Array.isArray(assignedScope.moves)
+          ? assignedScope.moves.map((m: string) => new mongoose.Types.ObjectId(m))
+          : [],
+      };
+    }
+
     if (displayName) employee.displayName = displayName;
     if (employeeRole) employee.employeeRole = employeeRole;
+    if (department !== undefined) employee.department = department;
     if (skills) employee.skills = skills;
     if (accountStatus) employee.accountStatus = accountStatus;
-    if (Array.isArray(permissions)) employee.permissions = permissions;
+
+    // Granular permission overrides: Role Defaults + Granted - Revoked
+    if (permissionOverrides !== undefined) {
+      const granted = Array.isArray(permissionOverrides?.granted) ? permissionOverrides.granted : [];
+      const revoked = Array.isArray(permissionOverrides?.revoked) ? permissionOverrides.revoked : [];
+      employee.permissionOverrides = { granted, revoked };
+
+      const activeRole = employeeRole || employee.employeeRole;
+      const matchedRole =
+        STANDARD_VENDOR_ROLES.find((r) => r.id === activeRole) ||
+        req.vendor.customRoles?.find((r: any) => r.id === activeRole);
+      const basePerms = matchedRole?.permissions || [];
+      employee.permissions = Array.from(new Set([...basePerms, ...granted])).filter((p) => !revoked.includes(p));
+    } else if (Array.isArray(permissions)) {
+      employee.permissions = permissions;
+    }
 
     await employee.save();
+    invalidatePermissionsCache(employee._id.toString());
 
     await logVendorAction(
       req.user!.id,
@@ -513,91 +1270,769 @@ export const updateVendorEmployee = async (req: AuthenticatedRequest, res: Respo
       'User',
       id,
       `Updated employee profile for ${employee.displayName}`,
-      { employeeRole, accountStatus }
+      {
+        vendorId: vendorId.toString(),
+        employeeName: employee.displayName,
+        employeeRole: employee.employeeRole,
+        permissionOverrides: employee.permissionOverrides,
+        permissionsCount: employee.permissions?.length || 0,
+        accountStatus: employee.accountStatus,
+      }
     );
 
-    res.status(200).json({ employee });
+    const updated = await User.findById(id).populate('reportsTo', 'displayName phone employeeRole email username');
+
+    res.status(200).json({ employee: updated });
   } catch (error: any) {
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to update employee' } });
+  }
+};
+
+export const sendEmployeePasswordResetLink = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendorId = req.vendor._id;
+    const { id } = req.params;
+    const { channel = 'whatsapp' } = req.body;
+
+    const employee = await User.findOne({ _id: id, vendorId });
+    if (!employee) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Employee not found in your company' } });
+      return;
+    }
+
+    const crypto = await import('crypto');
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    employee.resetPasswordToken = hashedToken;
+    employee.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await employee.save();
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const resetUrl = `${frontendUrl}/vendor/reset-password?token=${rawToken}`;
+
+    let maskedTarget = '';
+    let providerStatus = 'ready';
+    let whatsappUrl: string | null = null;
+    let message = '';
+
+    if (channel === 'whatsapp') {
+      const normalizedPhone = normalizePhoneForWhatsApp(employee.phone);
+      maskedTarget = `+${normalizedPhone.slice(0, 2)} ••••• ${normalizedPhone.slice(-4)}`;
+      const waText = `🔐 *Package Mover — Employee Password Reset*\n\nHello *${employee.displayName}*,\n\nA password reset request was initiated for your team account (*${employee.username || employee.email}*).\n\nClick the link below to set your new password (valid for 1 hour):\n${resetUrl}\n\nIf you have any questions, reach out to your operational manager.`;
+      whatsappUrl = `https://wa.me/${normalizedPhone}?text=${encodeURIComponent(waText)}`;
+      message = `WhatsApp reset link prepared for ${employee.displayName} (${maskedTarget}). Click below to open WhatsApp.`;
+    } else if (channel === 'sms') {
+      const rawPhone = employee.phone.replace(/\D/g, '');
+      maskedTarget = `••••• ${rawPhone.slice(-4)}`;
+      const smsProviderConfigured = Boolean(process.env.TWILIO_SID || process.env.SMS_API_KEY);
+      providerStatus = smsProviderConfigured ? 'dispatched' : 'pending_provider_configuration';
+      message = smsProviderConfigured
+        ? `Password reset SMS dispatched to ${maskedTarget}.`
+        : `SMS Gateway provider not configured in environment. Secure link generated for direct supervisor delivery.`;
+    } else {
+      const email = employee.email || `${employee.username}@packagemovers.in`;
+      const [name, domain] = email.split('@');
+      maskedTarget = `${name ? name.slice(0, 2) : 'em'}•••@${domain || 'company.in'}`;
+      const emailProviderConfigured = Boolean(process.env.SMTP_HOST || process.env.SENDGRID_API_KEY);
+      providerStatus = emailProviderConfigured ? 'dispatched' : 'pending_provider_configuration';
+      message = emailProviderConfigured
+        ? `Password reset email dispatched to ${maskedTarget}.`
+        : `SMTP Gateway provider not configured in environment. Secure link generated for direct supervisor delivery.`;
+    }
+
+    res.status(200).json({
+      success: true,
+      channel,
+      providerStatus,
+      maskedTarget,
+      message,
+      whatsappUrl,
+      resetUrl,
+    });
+  } catch (err: any) {
+    console.error('[sendEmployeePasswordResetLink] Error:', err);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to generate employee password reset link' } });
+  }
+};
+
+// 3.5 Individual Employee Profile & Operational Scope
+export const getVendorEmployeeById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendorId = req.vendor._id;
+    const rawId = String(req.params.id);
+    const id = rawId === 'me' ? String(req.user?.id) : rawId;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid employee ID format' } });
+      return;
+    }
+
+    const isSelf = req.user?.id === String(id);
+    const isOwner = req.user?.role === 'vendor' || (req.vendor?.ownerId && req.vendor.ownerId.toString() === req.user?.id);
+
+    if (!isSelf && !isOwner) {
+      const { resolveUserPermissions } = await import('./authController.js');
+      const callerPerms = await resolveUserPermissions(req.user);
+      const canView = callerPerms.some((p) =>
+        ['employees:view', 'employees:manage', 'staff:view', 'staff:manage', 'Manage Employees & Crew', '*'].includes(p)
+      );
+      if (!canView) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'You do not have permission to view other employee profiles.',
+          },
+        });
+        return;
+      }
+    }
+
+    const employee = await User.findOne({
+      _id: id,
+      accountStatus: { $ne: 'deleted' },
+      $or: [{ vendorId }, { _id: req.vendor?.ownerId }],
+    })
+      .populate('reportsTo', 'displayName username phone employeeRole email')
+      .populate('assignedScope.crew', 'displayName username phone employeeRole skills')
+      .populate('assignedScope.moves', 'status scheduledDate assignedVehicleId')
+      .select('-password -resetPasswordToken -plainTempPassword');
+
+    if (!employee) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Employee not found in your company' } });
+      return;
+    }
+
+    // Direct reports
+    const directReports = await User.find({ reportsTo: employee._id, vendorId, accountStatus: { $ne: 'deleted' } })
+      .select('_id displayName username phone employeeRole skills accountStatus createdAt');
+
+    // Resolve operational scope
+    const scope = await resolveEmployeeOperationalScope(employee, vendorId);
+
+    // Populated assigned vehicles
+    const assignedVehicles = await Vehicle.find({
+      vendorId,
+      $or: [
+        { _id: { $in: scope.vehicleIds.filter((v: string) => mongoose.Types.ObjectId.isValid(v)) } },
+        { registrationNumber: { $in: scope.vehicleIds } },
+      ],
+    }).select('name registrationNumber vehicleType capacity isActive notes');
+
+    // Populated assigned active/recent moves
+    const assignedMoves = await Booking.find({
+      _id: { $in: scope.bookingIds },
+      vendorId,
+    })
+      .sort({ scheduledDate: -1 })
+      .limit(20)
+      .populate('customerId', 'displayName phone')
+      .populate('requestId')
+      .select('status scheduledDate assignedVehicleId assignedWorkers deliveryCode operationalNotes');
+
+    // Assigned crew members (excluding self)
+    const assignedCrew = await User.find({
+      _id: { $in: scope.crewIds, $ne: employee._id },
+      vendorId,
+    }).select('_id displayName username phone employeeRole skills accountStatus');
+
+    // Role definition with structured responsibilities (supporting dynamic custom vendor roles)
+    const norm = (s?: string) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const empRoleNorm = norm(employee.employeeRole);
+    const customRoleMatch = (req.vendor.customRoles || []).find(
+      (r: any) => norm(r.id) === empRoleNorm || norm(r.name) === empRoleNorm
+    );
+    const standardRoleMatch = STANDARD_VENDOR_ROLES.find(
+      (r) => norm(r.id) === empRoleNorm || norm(r.name) === empRoleNorm
+    );
+
+    const roleDef = customRoleMatch
+      ? {
+          id: customRoleMatch.id,
+          name: customRoleMatch.name,
+          purpose: customRoleMatch.purpose || 'Custom departmental operational role',
+          accessLevel: customRoleMatch.accessLevel || 'Operational Scope',
+          responsibleFor: ['Authorized department operations and assigned tasks'],
+          canAccess: customRoleMatch.permissions || [],
+          canPerform: customRoleMatch.permissions || [],
+          cannotAccess: ['Company finance', 'Vendor platform configuration'],
+          permissions: customRoleMatch.permissions || [],
+        }
+      : standardRoleMatch || {
+          id: employee.employeeRole || 'worker',
+          name: (employee.employeeRole || 'worker').replace(/_/g, ' '),
+          purpose: 'Operational staff member',
+          responsibleFor: ['Field operations and task completion'],
+          canAccess: ['Assigned operational tasks'],
+          canPerform: ['Update status on assigned work'],
+          cannotAccess: ['Company finance', 'Vendor KYC approval'],
+          permissions: [
+            'Update Move Progression Milestones',
+            'Enter Recipient Delivery Verification Code',
+            'Vehicle Inspection & Maintenance Tracking',
+          ],
+        };
+
+    // Recent audit trail for this employee (real MongoDB data)
+    const recentActivity = await AuditLog.find({
+      actorId: employee._id,
+    })
+      .sort({ createdAt: -1 })
+      .limit(15)
+      .lean();
+
+    // Calculate effective permissions: (Role Base + Granted) - Revoked
+    const basePermissions: string[] = roleDef.permissions || [];
+    const granted = employee.permissionOverrides?.granted || [];
+    const revoked = employee.permissionOverrides?.revoked || [];
+    let effectivePermissions: string[] = [];
+    if (granted.length > 0 || revoked.length > 0) {
+      effectivePermissions = Array.from(new Set([...basePermissions, ...granted])).filter((p) => !revoked.includes(p));
+    } else if (Array.isArray(employee.permissions) && employee.permissions.length > 0) {
+      effectivePermissions = employee.permissions;
+    } else {
+      effectivePermissions = basePermissions;
+    }
+
+    const empObj: any = typeof employee.toObject === 'function' ? employee.toObject() : { ...employee };
+    empObj.companyName = req.vendor?.companyName || req.vendor?.businessName || 'Registered Moving Carrier';
+
+    res.status(200).json({
+      employee: empObj,
+      companyName: req.vendor?.companyName || req.vendor?.businessName || 'Registered Moving Carrier',
+      roleDef,
+      effectivePermissions,
+      permissionOverrides: employee.permissionOverrides || { granted: [], revoked: [] },
+      scope: {
+        isCompanyWide: Boolean(scope.isCompanyWide),
+      },
+      directReports,
+      assignedCrew,
+      assignedVehicles,
+      assignedMoves,
+      recentActivity,
+    });
+  } catch (error: any) {
+    console.error('[getVendorEmployeeById] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to retrieve employee profile' } });
   }
 };
 
 // 4. Roles & Permissions (Vendor Admin)
 export const VENDOR_PERMISSION_DOMAINS = [
   {
-    domain: 'Staff & Crew Management',
-    icon: 'Users',
+    domain: 'Quotations',
+    icon: 'FileText',
+    sidebarHref: '/vendor/quotations',
     permissions: [
-      { id: 'Manage Employees & Crew', description: 'Add, edit, and manage staff accounts and active status' },
-      { id: 'Assign Available Workers & Crew', description: 'Assign drivers, supervisors, and movers to confirmed moves' },
-      { id: 'View Crew Attendance & Performance', description: 'View completed moves, customer feedback, and job history' },
+      {
+        id: 'quotations:view',
+        name: 'Quotation: Can View Only',
+        description: 'Can inspect incoming customer moving requests, inventory volume manifests, and pricing history',
+        aliases: ['Review Available Customer Leads', 'View Quotations'],
+      },
+      {
+        id: 'quotations:create',
+        name: 'Quotation: Can Create Quotations',
+        description: 'Can draft and create price estimates, vehicle recommendations, and customized packing costs',
+        aliases: ['Create & Submit Formal Quotations', 'Create Quotations'],
+      },
+      {
+        id: 'quotations:edit',
+        name: 'Quotation: Can Edit Quotations',
+        description: 'Can adjust quotation rates, apply promotional discounts, and update moving terms',
+        aliases: ['Edit Quotations', 'quotations:manage'],
+      },
+      {
+        id: 'quotations:submit',
+        name: 'Quotation: Can Submit Quotations',
+        description: 'Can formally seal and dispatch finalized quotation bids directly to customers',
+        aliases: ['Submit Quotations', 'Create & Submit Formal Quotations'],
+      },
     ],
   },
   {
-    domain: 'Trucks & Fleet',
+    domain: 'Bookings',
+    icon: 'CalendarCheck',
+    sidebarHref: '/vendor/bookings',
+    permissions: [
+      {
+        id: 'bookings:view',
+        name: 'Bookings: Can View Bookings',
+        description: 'Can access confirmed moving schedules, client addresses, and cargo item manifests',
+        aliases: ['View & Dispatch Bookings', 'View Bookings'],
+      },
+      {
+        id: 'bookings:dispatch',
+        name: 'Bookings: Can Dispatch Bookings',
+        description: 'Can confirm departure times, allocate operational coordinators, and launch move operations',
+        aliases: ['Bookings & Job Dispatch', 'Dispatch Bookings'],
+      },
+      {
+        id: 'bookings:update_status',
+        name: 'Bookings: Can Update Booking Status',
+        description: 'Can advance moving progress stages: Scheduled, Packed, In Transit, Arrived, and Completed',
+        aliases: ['Update Move Progression Milestones', 'Update Booking Status'],
+      },
+      {
+        id: 'bookings:verify_delivery',
+        name: 'Bookings: Can Verify Delivery OTP',
+        description: 'Can validate customer recipient drop-off security PIN code at destination to complete the job',
+        aliases: ['Enter Recipient Delivery Verification Code', 'Verify Delivery OTP'],
+      },
+    ],
+  },
+  {
+    domain: 'Live Tracking',
     icon: 'Truck',
+    sidebarHref: '/vendor/tracking',
     permissions: [
-      { id: 'Fleet & Vehicle Operations', description: 'Register trucks and manage RC, fitness, and insurance records' },
-      { id: 'Assign Transport Trucks to Moves', description: 'Assign moving trucks and carriers to customer moves' },
-      { id: 'Vehicle Inspection & Maintenance Tracking', description: 'Record pre-trip truck inspections and mileage checkups' },
+      {
+        id: 'tracking:view',
+        name: 'Live Tracking: Can View Live Tracking',
+        description: 'Can monitor real-time vehicle GPS positions, speed telemetry, and active transit routes',
+        aliases: ['View Live GPS Tracking', 'Fleet & Vehicle Operations', 'View Tracking'],
+      },
+      {
+        id: 'tracking:view_crew',
+        name: 'Live Tracking: Can View Assigned Crew',
+        description: 'Can inspect on-duty moving crew, certified drivers, and operational personnel on transit routes',
+        aliases: ['View Assigned Crew', 'Customer Support Coordination'],
+      },
+      {
+        id: 'tracking:view_vehicles',
+        name: 'Live Tracking: Can View Assigned Vehicles',
+        description: 'Can inspect commercial moving truck specifications, plate numbers, and telemetry units',
+        aliases: ['View Assigned Vehicles', 'Fleet & Vehicle Operations'],
+      },
+      {
+        id: 'tracking:update_status',
+        name: 'Live Tracking: Can Update Tracking Status',
+        description: 'Can broadcast milestone alerts, transit delays, and updated arrival ETAs to customers',
+        aliases: ['Update Tracking Status', 'Customer Support Coordination', 'Update Move Progression Milestones'],
+      },
     ],
   },
   {
-    domain: 'Bookings & Moving Jobs',
-    icon: 'Package',
+    domain: 'Crew Workers',
+    icon: 'HardHat',
+    sidebarHref: '/vendor/workers',
     permissions: [
-      { id: 'View & Dispatch Bookings', description: 'View confirmed moves, customer addresses, and job schedules' },
-      { id: 'Update Move Progression Milestones', description: 'Update move status: on the way, packing, in transit, delivered' },
-      { id: 'Enter Recipient Delivery Verification Code', description: 'Enter customer delivery OTP to complete and verify dropoff' },
+      {
+        id: 'workers:view',
+        name: 'Crew Workers: Can View Crew Workers',
+        description: 'Can browse field workers, certified drivers, verified movers, licenses, and duty rosters',
+        aliases: ['Manage Employees & Crew', 'View Crew Attendance & Performance', 'View Crew Workers'],
+      },
+      {
+        id: 'workers:assign',
+        name: 'Crew Workers: Can Assign Crew to Bookings',
+        description: 'Can allocate certified drivers and moving crew members to confirmed customer moves',
+        aliases: ['Assign Available Workers & Crew'],
+      },
+      {
+        id: 'workers:manage',
+        name: 'Crew Workers: Can Manage Crew Duty & Attendance',
+        description: 'Can log daily worker attendance, check-in duty shifts, and maintain performance notes',
+        aliases: ['View Crew Attendance & Performance'],
+      },
     ],
   },
   {
-    domain: 'Quotes & Customer Leads',
-    icon: 'Calculator',
+    domain: 'Fleet Vehicles',
+    icon: 'Car',
+    sidebarHref: '/vendor/vehicles',
     permissions: [
-      { id: 'Review Available Customer Leads', description: 'View new customer moving requests in your service areas' },
-      { id: 'Create & Submit Formal Quotations', description: 'Create price estimates with truck type and crew count' },
-      { id: 'Quotation Performance & Insights', description: 'See accepted and rejected quotes and conversion stats' },
+      {
+        id: 'vehicles:view',
+        name: 'Fleet Vehicles: Can View Fleet Vehicles',
+        description: 'Can browse registered commercial trucks, vehicle carrying capacities, and fitness certificates',
+        aliases: ['Fleet & Vehicle Operations', 'View Vehicles'],
+      },
+      {
+        id: 'vehicles:assign',
+        name: 'Fleet Vehicles: Can Assign Transport Trucks',
+        description: 'Can designate specific moving trucks and transport carriers to confirmed customer moves',
+        aliases: ['Assign Transport Trucks to Moves'],
+      },
+      {
+        id: 'vehicles:maintenance',
+        name: 'Fleet Vehicles: Can Record Maintenance & Logs',
+        description: 'Can log pre-trip vehicle condition, odometer readings, fitness renewals, and repairs',
+        aliases: ['Vehicle Inspection & Maintenance Tracking'],
+      },
     ],
   },
   {
-    domain: 'Services & Service Areas',
+    domain: 'Demand Insights',
+    icon: 'TrendingUp',
+    sidebarHref: '/vendor/demand',
+    permissions: [
+      {
+        id: 'demand:view',
+        name: 'Demand Insights: Can View Customer Demand & Leads',
+        description: 'Can inspect prospective customer leads, route volume heatmaps, and move inquiries',
+        aliases: ['Review Available Customer Leads', 'Quotation Performance & Insights'],
+      },
+      {
+        id: 'demand:export',
+        name: 'Demand Insights: Can Export Demand Analytics',
+        description: 'Can download route demand summaries, win/loss conversion rates, and volume metrics',
+        aliases: ['Reports & Performance Analytics'],
+      },
+    ],
+  },
+  {
+    domain: 'Services Catalog',
     icon: 'Layers',
+    sidebarHref: '/vendor/services',
     permissions: [
-      { id: 'Service Catalog Configuration', description: 'Manage moving packages (home, office, vehicle) and pricing' },
-      { id: 'Custom Specialized Services', description: 'Add specialized add-on services (e.g. piano moving, storage)' },
-      { id: 'Coverage Areas Configuration', description: 'Choose which cities and pin code areas your company serves' },
+      {
+        id: 'services:view',
+        name: 'Services Catalog: Can View Services Catalog',
+        description: 'Can browse company service offerings, specialized packing options, and assembly rates',
+        aliases: ['Service Catalog Configuration', 'View Services'],
+      },
+      {
+        id: 'services:manage',
+        name: 'Services Catalog: Can Configure Services & Pricing',
+        description: 'Can add, edit, or archive service offerings, base rates, and specialized handling fees',
+        aliases: ['Service Catalog Configuration', 'Custom Specialized Services'],
+      },
     ],
   },
   {
-    domain: 'Business Documents & Verification',
-    icon: 'ShieldCheck',
+    domain: 'Moving Packages',
+    icon: 'Package',
+    sidebarHref: '/vendor/packages',
     permissions: [
-      { id: 'Document Submissions', description: 'Upload GST, business licenses, and company insurance files' },
-      { id: 'Regulatory Status Monitoring', description: 'Check admin verification and approval status of documents' },
+      {
+        id: 'packages:view',
+        name: 'Moving Packages: Can View Moving Packages',
+        description: 'Can browse packaged moving bundles, residential tiers (1BHK, 2BHK, Villa, Office)',
+        aliases: ['Service Catalog Configuration'],
+      },
+      {
+        id: 'packages:manage',
+        name: 'Moving Packages: Can Create & Manage Packages',
+        description: 'Can design, publish, or modify moving package bundles and promotional prices',
+        aliases: ['Service Catalog Configuration'],
+      },
     ],
   },
   {
-    domain: 'Reports & Customer Support',
+    domain: 'Service Areas',
+    icon: 'MapPin',
+    sidebarHref: '/vendor/service-areas',
+    permissions: [
+      {
+        id: 'service_areas:view',
+        name: 'Service Areas: Can View Service Areas',
+        description: 'Can inspect operational cities, postal coverage lists, and active intercity corridors',
+        aliases: ['Coverage Areas Configuration'],
+      },
+      {
+        id: 'service_areas:manage',
+        name: 'Service Areas: Can Manage Operating Coverage',
+        description: 'Can add, modify, or expand serviceable cities, pin codes, and territorial transit rates',
+        aliases: ['Coverage Areas Configuration'],
+      },
+    ],
+  },
+  {
+    domain: 'Compliance Docs',
+    icon: 'FileCheck',
+    sidebarHref: '/vendor/documents',
+    permissions: [
+      {
+        id: 'documents:view',
+        name: 'Compliance Docs: Can View Compliance Documents',
+        description: 'Can inspect submitted commercial trade licenses, GST documents, and cargo insurance policies',
+        aliases: ['Document Submissions', 'Regulatory Status Monitoring'],
+      },
+      {
+        id: 'documents:upload',
+        name: 'Compliance Docs: Can Upload & Submit Paperwork',
+        description: 'Can submit renewed licenses, insurance policies, and statutory compliance filings',
+        aliases: ['Document Submissions'],
+      },
+    ],
+  },
+  {
+    domain: 'Employees',
+    icon: 'Users',
+    sidebarHref: '/vendor/employees',
+    permissions: [
+      {
+        id: 'employees:view',
+        name: 'Employees: Can View Employees',
+        description: 'Can access company employee directory, contact details, assigned roles, and hierarchy',
+        aliases: ['Manage Employees & Crew', 'staff:view', 'View Staff Directory', 'View Employees'],
+      },
+      {
+        id: 'employees:create',
+        name: 'Employees: Can Create Employee Accounts',
+        description: 'Can onboard new employees, issue login access, and assign initial operational roles',
+        aliases: ['Manage Employees & Crew', 'staff:manage', 'Onboard Employees', 'Create Employee'],
+      },
+      {
+        id: 'employees:edit',
+        name: 'Employees: Can Edit Employee Records',
+        description: 'Can update staff profiles, reporting managers, and department assignments',
+        aliases: ['Manage Employees & Crew', 'staff:manage', 'Edit Staff Accounts', 'Edit Employee'],
+      },
+      {
+        id: 'employees:assign',
+        name: 'Employees: Can Assign Supervisor & Scope',
+        description: 'Can assign employee operational scope, supervisory reports, or update active status',
+        aliases: ['Manage Employees & Crew', 'staff:manage', 'Assign Employee', 'employees:status'],
+      },
+    ],
+  },
+  {
+    domain: 'Roles & Rules',
+    icon: 'Shield',
+    sidebarHref: '/vendor/roles',
+    permissions: [
+      {
+        id: 'roles:view',
+        name: 'Roles & Rules: Can View Roles & Rules',
+        description: 'Can inspect company operational roles, scope definitions, and permission templates',
+        aliases: ['roles:manage', 'permissions:manage', 'View Roles', 'View Company Roles'],
+      },
+      {
+        id: 'roles:manage',
+        name: 'Roles & Rules: Can Create & Manage Roles',
+        description: 'Can create custom company roles, configure role permissions, and modify role policies',
+        aliases: ['roles:create', 'roles:edit', 'permissions:manage'],
+      },
+    ],
+  },
+  {
+    domain: 'Permissions',
+    icon: 'KeyRound',
+    sidebarHref: '/vendor/permissions',
+    permissions: [
+      {
+        id: 'permissions:view',
+        name: 'Permissions: Can View Permissions',
+        description: 'Can inspect base role template permissions and employee permission summaries',
+        aliases: ['View Permissions'],
+      },
+      {
+        id: 'permissions:manage',
+        name: 'Permissions: Can Manage Employee Permissions',
+        description: 'Can configure individual employee permission overrides and role defaults',
+        aliases: ['Manage Permissions'],
+      },
+    ],
+  },
+  {
+    domain: 'Business Reports',
     icon: 'BarChart3',
+    sidebarHref: '/vendor/reports',
     permissions: [
-      { id: 'Reports & Performance Analytics', description: 'View revenue earnings, booking counts, and business trends' },
-      { id: 'Operational Audit Logs', description: 'See activity logs of changes made by your team members' },
-      { id: 'Customer Support Coordination', description: 'Reply to customer messages and help resolve move issues' },
+      {
+        id: 'reports:view',
+        name: 'Business Reports: Can View Business Reports',
+        description: 'Can inspect gross moving revenue, booking volumes, driver payouts, and profitability charts',
+        aliases: ['Reports & Performance Analytics', 'View Reports'],
+      },
+      {
+        id: 'reports:export',
+        name: 'Business Reports: Can Export Operational Analytics',
+        description: 'Can download CSV statements and operational metrics for accounting and executive review',
+        aliases: ['Reports & Performance Analytics', 'Export Reports'],
+      },
+    ],
+  },
+  {
+    domain: 'Activity Logs',
+    icon: 'FileClock',
+    sidebarHref: '/vendor/audit-logs',
+    permissions: [
+      {
+        id: 'audit_logs:view',
+        name: 'Activity Logs: Can View Activity Logs',
+        description: 'Can audit immutable chronological logs of actions, status updates, and assignments across company',
+        aliases: ['Operational Audit Logs', 'audit:view', 'View Activity Logs'],
+      },
     ],
   },
 ];
 
 export const STANDARD_VENDOR_ROLES = [
   {
+    id: 'operational_manager',
+    name: 'Operational Manager',
+    purpose: 'Supervises vehicle tracking, coordinates field crew and drivers working under them, monitors active moves, and updates milestone status.',
+    accessLevel: 'Operations & Vehicle Tracking Supervision',
+    responsibleFor: [
+      'Field crew and driver supervision',
+      'Assigned moves progression & delivery verification',
+      'Truck and vehicle allocation oversight',
+      'Operational dispute & issue escalation',
+    ],
+    canAccess: ['Supervised crew members', 'Assigned transport vehicles', 'Assigned customer moves'],
+    canPerform: [
+      'View & advance move milestones',
+      'Assign drivers & crew to bookings',
+      'Allocate fleet trucks to moves',
+      'Verify delivery completion PINs',
+    ],
+    cannotAccess: ['Company financial accounts', 'Vendor regulatory KYC submission', 'Admin root configuration'],
+    permissions: [
+      'View & Dispatch Bookings',
+      'Update Move Progression Milestones',
+      'Assign Available Workers & Crew',
+      'Assign Transport Trucks to Moves',
+      'Fleet & Vehicle Operations',
+      'Vehicle Inspection & Maintenance Tracking',
+      'Customer Support Coordination',
+    ],
+    status: 'Active',
+    isCustom: false,
+    isSystemRoot: true,
+  },
+  {
+    id: 'tracking_coordinator',
+    name: 'Vehicle Tracking Coordinator',
+    purpose: 'Dedicated fleet tracking specialist. Monitors real-time GPS telemetry, tracks vehicle halts/idle alerts, contacts on-ground crew directly, and broadcasts real-time delay & milestone updates to clients.',
+    accessLevel: 'Live Fleet Tracking & Client Updates',
+    responsibleFor: [
+      'Real-time GPS vehicle & route telemetry',
+      'Vehicle halt & stagnation alerts (over threshold)',
+      'Direct rapid communication with on-ground crew',
+      'Broadcasting real-time customer delay notices',
+    ],
+    canAccess: ['Assigned vehicles', 'Assigned on-ground crew', 'Assigned active moves'],
+    canPerform: [
+      'View live GPS tracking map',
+      'Contact assigned crew directly (call/whatsapp)',
+      'Log crew check-in calls & vehicle status',
+      'Broadcast delay notices directly to customers',
+      'Update permitted move milestones',
+    ],
+    cannotAccess: ['Company finance', 'Vendor KYC verification', 'Company-wide staff admin', 'Competitor quotations'],
+    permissions: [
+      'View & Dispatch Bookings',
+      'Update Move Progression Milestones',
+      'Enter Recipient Delivery Verification Code',
+      'Assign Available Workers & Crew',
+      'Customer Support Coordination',
+    ],
+    status: 'Active',
+    isCustom: false,
+    isSystemRoot: true,
+  },
+  {
+    id: 'fleet_supervisor',
+    name: 'Fleet Supervisor',
+    purpose: 'Supervises transport trucks, driver check-in, GPS route tracking, pre-trip vehicle inspections, and fleet maintenance.',
+    accessLevel: 'Fleet Operations & Vehicle Supervision',
+    responsibleFor: [
+      'Truck availability & maintenance logs',
+      'Pre-trip vehicle inspections & fitness',
+      'Driver assignment & shift coordination',
+    ],
+    canAccess: ['Assigned fleet vehicles', 'Assigned drivers'],
+    canPerform: [
+      'Update vehicle operational status',
+      'Assign transport trucks to moves',
+      'Record vehicle maintenance & inspections',
+      'View assigned dispatch bookings',
+    ],
+    cannotAccess: ['Company financial ledger', 'Vendor KYC submissions', 'Company-wide employee administration'],
+    permissions: [
+      'Fleet & Vehicle Operations',
+      'Assign Transport Trucks to Moves',
+      'Vehicle Inspection & Maintenance Tracking',
+      'View & Dispatch Bookings',
+      'Update Move Progression Milestones',
+    ],
+    status: 'Active',
+    isCustom: false,
+    isSystemRoot: true,
+  },
+  {
+    id: 'dispatch_coordinator',
+    name: 'Dispatch Coordinator',
+    purpose: 'Schedules moving dispatches, assigns available crew and transport trucks to incoming orders, coordinates timing.',
+    accessLevel: 'Dispatch & Crew Allocation',
+    responsibleFor: [
+      'Move dispatch scheduling & timings',
+      'Crew and vehicle matching for orders',
+      'Lead & quotation evaluation',
+    ],
+    canAccess: ['Assigned dispatch operations', 'Available crew & trucks', 'Customer booking schedules'],
+    canPerform: [
+      'Assign crew & trucks to confirmed moves',
+      'Create and submit customer quotations',
+      'Update move dispatch schedules',
+    ],
+    cannotAccess: ['Finance disbursement', 'Vendor business KYC approval'],
+    permissions: [
+      'View & Dispatch Bookings',
+      'Assign Available Workers & Crew',
+      'Assign Transport Trucks to Moves',
+      'Review Available Customer Leads',
+      'Create & Submit Formal Quotations',
+    ],
+    status: 'Active',
+    isCustom: false,
+    isSystemRoot: true,
+  },
+  {
+    id: 'customer_support',
+    name: 'Customer Support Coordinator',
+    purpose: 'Handles customer inquiries, relays booking status updates, logs special handling instructions, and coordinates customer feedback.',
+    accessLevel: 'Customer Inquiries & Support Cases',
+    responsibleFor: [
+      'Customer communication & dispute resolution',
+      'Relaying booking & tracking updates to clients',
+      'Coordinating delivery feedback & ratings',
+    ],
+    canAccess: ['Assigned customer bookings', 'Customer delivery notices'],
+    canPerform: [
+      'View booking details',
+      'Dispatch delay & status notices',
+      'Log customer support notes',
+    ],
+    cannotAccess: ['Company finance', 'Vendor KYC approval', 'Driver assignment', 'Vehicle Fleet CRUD'],
+    permissions: [
+      'View & Dispatch Bookings',
+      'Customer Support Coordination',
+    ],
+    status: 'Active',
+    isCustom: false,
+    isSystemRoot: true,
+  },
+  {
     id: 'manager',
-    name: 'Manager',
+    name: 'General Operations Manager',
     purpose: 'Full access to manage staff, assign vehicles, create quotes, view reports, and oversee all company operations.',
-    accessLevel: 'Management (Full Access)',
+    accessLevel: 'Management (Full Operations Access)',
+    responsibleFor: [
+      'Entire operational staff & crew management',
+      'Fleet deployment and quotation approvals',
+      'Operational performance reports & analytics',
+    ],
+    canAccess: ['All company operations', 'All staff members', 'All fleet vehicles', 'All customer bookings'],
+    canPerform: [
+      'Manage staff accounts & roles',
+      'Dispatch orders & allocate resources',
+      'Create quotations & view analytics',
+      'Manage service catalog',
+    ],
+    cannotAccess: ['Root platform admin configurations'],
     permissions: [
       'Manage Employees & Crew',
       'Fleet & Vehicle Operations',
       'Bookings & Job Dispatch',
+      'View & Dispatch Bookings',
+      'Assign Available Workers & Crew',
+      'Assign Transport Trucks to Moves',
+      'Update Move Progression Milestones',
       'Service Catalog Configuration',
       'Document Submissions',
       'Reports & Performance Analytics',
@@ -615,6 +2050,18 @@ export const STANDARD_VENDOR_ROLES = [
     name: 'Operations Staff',
     purpose: 'Manages daily moves, assigns drivers and trucks, updates job status, and coordinates with customers.',
     accessLevel: 'Operations & Moving Jobs',
+    responsibleFor: [
+      'Daily moving job execution',
+      'Driver and truck coordination',
+      'Customer move milestone updates',
+    ],
+    canAccess: ['Assigned moves', 'Assigned field teams'],
+    canPerform: [
+      'Update move milestones',
+      'Assign crew & trucks to assigned bookings',
+      'Coordinate customer drop-off',
+    ],
+    cannotAccess: ['Company finance', 'Staff salary/roles administration', 'Vendor KYC'],
     permissions: [
       'View & Dispatch Bookings',
       'Assign Available Workers & Crew',
@@ -633,6 +2080,18 @@ export const STANDARD_VENDOR_ROLES = [
     name: 'Crew Worker / Driver',
     purpose: 'Field worker who drives trucks, packs and loads items, updates move milestones, and verifies delivery OTP.',
     accessLevel: 'Field Crew & Drivers',
+    responsibleFor: [
+      'Physical item loading, packing, and driving',
+      'Pre-trip vehicle condition check',
+      'Recipient delivery OTP verification',
+    ],
+    canAccess: ['Personally assigned moves', 'Assigned vehicle'],
+    canPerform: [
+      'Advance move status for assigned job',
+      'Enter recipient delivery confirmation OTP',
+      'Log pre-trip vehicle condition',
+    ],
+    cannotAccess: ['Other teams\' moves', 'Quotation pricing', 'Company administration', 'Finance'],
     permissions: [
       'Update Move Progression Milestones',
       'Enter Recipient Delivery Verification Code',
@@ -655,9 +2114,34 @@ export const getVendorRoles = async (req: AuthenticatedRequest, res: Response): 
       };
     });
 
-    const roles = [...STANDARD_VENDOR_ROLES, ...customRoles];
+    // Merge standard roles with custom roles, strictly ensuring unique IDs across all roles.
+    // If a vendor has customized a role (same ID), the custom role definition takes precedence.
+    const roleMap = new Map<string, any>();
+    for (const r of STANDARD_VENDOR_ROLES) {
+      roleMap.set(r.id, { ...r, isCustom: false, isSystemRoot: true });
+    }
+    for (const r of customRoles) {
+      roleMap.set(r.id, r);
+    }
+    const roles = Array.from(roleMap.values());
+
+    // Compute dynamic aggregate counts for each role across the company (100% real MongoDB data)
+    const roleUserCounts = await User.aggregate([
+      { $match: { vendorId: req.vendor._id, accountStatus: { $ne: 'deleted' } } },
+      { $group: { _id: '$employeeRole', count: { $sum: 1 } } },
+    ]);
+    const countMap: Record<string, number> = {};
+    roleUserCounts.forEach((rc) => {
+      if (rc._id) countMap[rc._id] = rc.count;
+    });
+
+    const enrichedRoles = roles.map((r) => ({
+      ...r,
+      assignedStaffCount: countMap[r.id] || 0,
+    }));
+
     res.status(200).json({
-      roles,
+      roles: enrichedRoles,
       permissionDomains: VENDOR_PERMISSION_DOMAINS,
     });
   } catch (error: any) {
@@ -694,14 +2178,15 @@ export const addVendorRole = async (req: AuthenticatedRequest, res: Response): P
       ? roleKey.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_')
       : trimmedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-    if (['manager', 'operations', 'worker', 'admin'].includes(finalKey)) {
+    const standardIds = STANDARD_VENDOR_ROLES.map((sr) => sr.id);
+    if (standardIds.includes(finalKey) || ['manager', 'operations', 'worker', 'admin'].includes(finalKey)) {
       finalKey = `custom_${finalKey}_${Date.now()}`;
     }
 
     const customList = req.vendor.customRoles || [];
-    const exists = customList.some(
-      (r: any) => r.id === finalKey || r.name.toLowerCase() === trimmedName.toLowerCase()
-    );
+    const exists =
+      customList.some((r: any) => r.id === finalKey || r.name.toLowerCase() === trimmedName.toLowerCase()) ||
+      STANDARD_VENDOR_ROLES.some((r) => r.id === finalKey || r.name.toLowerCase() === trimmedName.toLowerCase());
     if (exists) {
       res.status(400).json({ error: { code: 'CONFLICT', message: `A role named "${trimmedName}" or with key "${finalKey}" already exists` } });
       return;
@@ -723,6 +2208,7 @@ export const addVendorRole = async (req: AuthenticatedRequest, res: Response): P
     req.vendor.customRoles.push(newRole as any);
 
     await req.vendor.save();
+    invalidatePermissionsCache();
 
     await logVendorAction(
       req.user!.id,
@@ -779,7 +2265,7 @@ export const updateVendorRole = async (req: AuthenticatedRequest, res: Response)
     if (accessLevel && typeof accessLevel === 'string' && accessLevel.trim()) {
       targetRole.accessLevel = accessLevel.trim();
     }
-    if (Array.isArray(permissions) && permissions.length > 0) {
+    if (Array.isArray(permissions)) {
       targetRole.permissions = permissions.map((p: any) => String(p).trim()).filter(Boolean);
     }
     if (status === 'Active' || status === 'Inactive') {
@@ -788,6 +2274,7 @@ export const updateVendorRole = async (req: AuthenticatedRequest, res: Response)
 
     req.vendor.customRoles[roleIndex] = targetRole;
     await req.vendor.save();
+    invalidatePermissionsCache();
 
     const roleObj = typeof targetRole.toObject === 'function' ? targetRole.toObject() : targetRole;
 
@@ -798,7 +2285,12 @@ export const updateVendorRole = async (req: AuthenticatedRequest, res: Response)
       'Vendor',
       req.vendor._id.toString(),
       `Updated custom vendor role: ${targetRole.name} (${id})`,
-      { updatedRole: roleObj }
+      {
+        roleId: id,
+        roleName: targetRole.name,
+        permissions: targetRole.permissions,
+        updatedRole: roleObj,
+      }
     );
 
     res.status(200).json({
@@ -836,6 +2328,7 @@ export const deleteVendorRole = async (req: AuthenticatedRequest, res: Response)
 
     req.vendor.customRoles = customList.filter((r: any) => r.id !== id);
     await req.vendor.save();
+    invalidatePermissionsCache();
 
     await logVendorAction(
       req.user!.id,
@@ -1297,10 +2790,17 @@ export const getVendorWorkers = async (req: AuthenticatedRequest, res: Response)
   try {
     const vendorId = req.vendor._id;
 
-    let workers = await User.find({ vendorId, accountStatus: { $ne: 'deleted' } }).sort({ displayName: 1 });
-    if (workers.length === 0) {
+    // Scope check: Scoped supervisors see their assigned crew; company-wide admins see all workers
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    const workerQuery: any = { vendorId, accountStatus: { $ne: 'deleted' } };
+    if (!scope.isCompanyWide && scope.crewIds.length > 0) {
+      workerQuery._id = { $in: scope.crewIds.map((cId) => new mongoose.Types.ObjectId(cId)) };
+    }
+
+    let workers = await User.find(workerQuery).sort({ displayName: 1 });
+    if (workers.length === 0 && scope.isCompanyWide) {
       await bootstrapVendorOperations(vendorId);
-      workers = await User.find({ vendorId, accountStatus: { $ne: 'deleted' } }).sort({ displayName: 1 });
+      workers = await User.find(workerQuery).sort({ displayName: 1 });
     }
 
     const activeMoves = await Booking.find({ vendorId, status: { $in: ACTIVE_BOOKING_STATUSES } }).select('assignedWorkers _id status scheduledDate');
@@ -1337,10 +2837,22 @@ export const getVendorVehicles = async (req: AuthenticatedRequest, res: Response
   try {
     const vendorId = req.vendor._id;
 
-    let vehicles = await Vehicle.find({ vendorId }).sort({ createdAt: -1 });
-    if (vehicles.length === 0) {
+    // Scope check: Scoped fleet/tracking staff see assigned vehicles; company-wide admins see all vehicles
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    const vehicleQuery: any = { vendorId };
+    if (!scope.isCompanyWide && scope.vehicleIds.length > 0) {
+      vehicleQuery.$or = [
+        { _id: { $in: scope.vehicleIds.filter((vId) => mongoose.Types.ObjectId.isValid(vId)) } },
+        { registrationNumber: { $in: scope.vehicleIds } },
+      ];
+    } else if (!scope.isCompanyWide && scope.vehicleIds.length === 0) {
+      vehicleQuery._id = null; // Scoped employee with no assigned vehicles
+    }
+
+    let vehicles = await Vehicle.find(vehicleQuery).sort({ createdAt: -1 });
+    if (vehicles.length === 0 && scope.isCompanyWide) {
       await bootstrapVendorOperations(vendorId);
-      vehicles = await Vehicle.find({ vendorId }).sort({ createdAt: -1 });
+      vehicles = await Vehicle.find(vehicleQuery).sort({ createdAt: -1 });
     }
 
     const activeMoves = await Booking.find({ vendorId, status: { $in: ACTIVE_BOOKING_STATUSES } }).select('assignedVehicleId _id status scheduledDate');
@@ -1592,6 +3104,20 @@ export const submitVendorDocument = async (req: AuthenticatedRequest, res: Respo
     }
 
     const vendor = req.vendor;
+    if (!vendor) {
+      res.status(404).json({ error: { code: 'VENDOR_NOT_FOUND', message: 'Vendor company not found' } });
+      return;
+    }
+    if (vendor.status === 'SUSPENDED') {
+      res.status(403).json({
+        error: {
+          code: 'VENDOR_SUSPENDED',
+          message: 'Account is suspended. Document submissions are disabled while suspended.',
+          suspensionReason: vendor.verificationDetails?.suspensionReason,
+        },
+      });
+      return;
+    }
     if (!vendor.verificationDetails) vendor.verificationDetails = {};
     if (!Array.isArray(vendor.verificationDetails.documents)) {
       vendor.verificationDetails.documents = [];
@@ -1744,6 +3270,12 @@ export const getVendorBookings = async (req: AuthenticatedRequest, res: Response
 
     const query: any = { vendorId };
 
+    // Scope enforcement: Scoped employees only see moves within their operational responsibility
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    if (!scope.isCompanyWide) {
+      query._id = { $in: scope.bookingIds.map((bId) => new mongoose.Types.ObjectId(bId)) };
+    }
+
     if (status && status !== 'ALL') {
       query.status = status;
     }
@@ -1765,6 +3297,11 @@ export const getVendorBookings = async (req: AuthenticatedRequest, res: Response
       await bootstrapVendorOperations(vendorId);
     }
 
+    // Configurable GPS Inactivity Threshold (PlatformSetting -> env -> default 60)
+    const thresholdSetting = await PlatformSetting.findOne({ key: 'GPS_INACTIVITY_THRESHOLD_MINUTES' }).lean();
+    const inactivityThresholdMinutes =
+      Number(thresholdSetting?.value) || Number(process.env.GPS_INACTIVITY_THRESHOLD_MINUTES) || 60;
+
     const [total, bookings] = await Promise.all([
       Booking.countDocuments(query),
       Booking.find(query)
@@ -1773,7 +3310,9 @@ export const getVendorBookings = async (req: AuthenticatedRequest, res: Response
         .limit(limitNum)
         .populate('customerId', 'displayName phone')
         .populate('requestId')
-        .populate('assignedWorkers', 'displayName phone employeeRole'),
+        .populate('assignedWorkers', 'displayName phone employeeRole skills')
+        .populate('leadWorkerId', 'displayName phone')
+        .populate('assignedCoordinatorId', 'displayName phone employeeRole'),
     ]);
 
     res.status(200).json({
@@ -1781,6 +3320,8 @@ export const getVendorBookings = async (req: AuthenticatedRequest, res: Response
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
+      isScopedView: !scope.isCompanyWide,
+      inactivityThresholdMinutes,
     });
   } catch (error: any) {
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to fetch bookings' } });
@@ -1801,10 +3342,23 @@ export const getVendorBookingById = async (req: AuthenticatedRequest, res: Respo
       .populate('customerId', 'displayName phone')
       .populate('requestId')
       .populate('assignedWorkers', 'displayName phone employeeRole skills')
-      .populate('leadWorkerId', 'displayName phone');
+      .populate('leadWorkerId', 'displayName phone')
+      .populate('assignedCoordinatorId', 'displayName phone employeeRole');
 
     if (!booking) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Booking not found or does not belong to your company' } });
+      return;
+    }
+
+    // Backend scope validation
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    if (!scope.isCompanyWide && !scope.bookingIds.includes(booking._id.toString())) {
+      res.status(403).json({
+        error: {
+          code: 'UNAUTHORIZED_SCOPE',
+          message: 'Access Restricted: This move is outside your assigned operational scope.',
+        },
+      });
       return;
     }
 
@@ -1831,7 +3385,7 @@ export const assignBookingResources = async (req: AuthenticatedRequest, res: Res
   try {
     const vendorId = req.vendor._id;
     const { id } = req.params;
-    const { workerIds, vehicleId, leadWorkerId } = req.body;
+    const { workerIds, vehicleId, leadWorkerId, coordinatorId } = req.body;
 
     const booking = await Booking.findOne({ _id: id, vendorId });
     if (!booking) {
@@ -1914,6 +3468,18 @@ export const assignBookingResources = async (req: AuthenticatedRequest, res: Res
       booking.assignedVehicleId = vehicle.registrationNumber;
     }
 
+    // Validate & Assign Coordinator / Tracking Supervisor
+    if (coordinatorId !== undefined) {
+      if (!coordinatorId || coordinatorId === 'none' || coordinatorId === '') {
+        booking.assignedCoordinatorId = undefined;
+      } else if (mongoose.isValidObjectId(coordinatorId)) {
+        const coordinator = await User.findOne({ _id: coordinatorId, vendorId, accountStatus: 'active' });
+        if (coordinator) {
+          booking.assignedCoordinatorId = coordinator._id;
+        }
+      }
+    }
+
     // Advance status if pending assignment
     if (booking.status === 'CONFIRMED' && booking.assignedWorkers?.length > 0) {
       booking.status = 'ASSIGNED' as BookingStatus;
@@ -1928,14 +3494,16 @@ export const assignBookingResources = async (req: AuthenticatedRequest, res: Res
       'RESOURCES_ASSIGNED',
       'Booking',
       id,
-      `Assigned ${booking.assignedWorkers.length} crew workers and vehicle ${booking.assignedVehicleId || 'N/A'} to move`,
-      { workerIds, vehicleId: booking.assignedVehicleId }
+      `Assigned ${booking.assignedWorkers.length} crew workers, vehicle ${booking.assignedVehicleId || 'N/A'}, and coordinator to move`,
+      { workerIds, vehicleId: booking.assignedVehicleId, coordinatorId }
     );
 
     const updated = await Booking.findById(id)
       .populate('customerId', 'displayName phone')
       .populate('requestId')
-      .populate('assignedWorkers', 'displayName phone employeeRole');
+      .populate('assignedWorkers', 'displayName phone employeeRole skills')
+      .populate('leadWorkerId', 'displayName phone')
+      .populate('assignedCoordinatorId', 'displayName phone employeeRole');
 
     res.status(200).json({
       message: 'Operational resources assigned to move successfully.',
@@ -1957,6 +3525,18 @@ export const updateBookingMilestone = async (req: AuthenticatedRequest, res: Res
     const booking = await Booking.findOne({ _id: id, vendorId });
     if (!booking) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Booking not found' } });
+      return;
+    }
+
+    // Scope check: Scoped employees can only update moves within their operational assignment
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    if (!scope.isCompanyWide && !scope.bookingIds.includes(booking._id.toString())) {
+      res.status(403).json({
+        error: {
+          code: 'UNAUTHORIZED_SCOPE',
+          message: 'Operational Scope Error: This move is outside your assigned operational scope.',
+        },
+      });
       return;
     }
 
@@ -1996,6 +3576,38 @@ export const updateBookingMilestone = async (req: AuthenticatedRequest, res: Res
     const prevStatus = booking.status;
     booking.status = status as BookingStatus;
     booking.version = (booking.version || 1) + 1;
+
+    // Update live GPS telemetry state if entering transit or pickup
+    if (status === 'IN_TRANSIT' || status === 'EN_ROUTE_PICKUP') {
+      booking.lastGpsUpdate = {
+        timestamp: new Date(),
+        latitude: booking.lastGpsUpdate?.latitude || 12.9716,
+        longitude: booking.lastGpsUpdate?.longitude || 77.5946,
+        locationName: status === 'IN_TRANSIT' ? 'Highway Transit Corridor' : 'City Pickup Route',
+        isStationary: false,
+        speedKmph: status === 'IN_TRANSIT' ? 45 : 30,
+      };
+    } else if (status === 'COMPLETED') {
+      if (booking.lastGpsUpdate) {
+        booking.lastGpsUpdate.isStationary = true;
+        booking.lastGpsUpdate.speedKmph = 0;
+      }
+    }
+
+    const actorName = req.user?.displayName || req.user?.phone || 'Operational Staff';
+    const actorRole = req.user?.employeeRole || req.user?.role || 'staff';
+
+    if (!booking.operationalNotes) booking.operationalNotes = [];
+    booking.operationalNotes.push({
+      timestamp: new Date(),
+      authorId: new mongoose.Types.ObjectId(req.user!.id),
+      authorName: actorName,
+      authorRole: actorRole,
+      noteType: 'STATUS_UPDATE',
+      content: `Milestone advanced from ${prevStatus} to ${status}`,
+      metadata: { prevStatus, newStatus: status },
+    });
+
     await booking.save();
 
     await logVendorAction(
@@ -2005,7 +3617,14 @@ export const updateBookingMilestone = async (req: AuthenticatedRequest, res: Res
       'Booking',
       id,
       `Advanced move milestone from ${prevStatus} to ${status}`,
-      { prevStatus, newStatus: status }
+      {
+        vendorId: vendorId.toString(),
+        actorName,
+        actorRole,
+        moveId: id,
+        prevStatus,
+        newStatus: status,
+      }
     );
 
     res.status(200).json({
@@ -2014,6 +3633,178 @@ export const updateBookingMilestone = async (req: AuthenticatedRequest, res: Res
     });
   } catch (error: any) {
     res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to update move status' } });
+  }
+};
+
+// 11b. Log Crew Contact on Vehicle Halt / Stationary Alert
+export const logBookingCrewContact = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendorId = req.vendor._id;
+    const id = String(req.params.id);
+    const { crewMemberName, crewPhone, contactChannel = 'phone', note, haltDurationMinutes = 60 } = req.body;
+
+    if (!note || !note.trim()) {
+      res.status(400).json({ error: { code: 'NOTE_REQUIRED', message: 'Crew contact note is required.' } });
+      return;
+    }
+
+    const booking = await Booking.findOne({ _id: id, vendorId });
+    if (!booking) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Booking not found' } });
+      return;
+    }
+
+    // Operational scope verification
+    const scope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    if (!scope.isCompanyWide && !scope.bookingIds.includes(booking._id.toString())) {
+      res.status(403).json({
+        error: {
+          code: 'UNAUTHORIZED_SCOPE',
+          message: 'Operational Scope Error: This move is outside your assigned operational scope.',
+        },
+      });
+      return;
+    }
+
+    const actorName = req.user?.displayName || req.user?.phone || 'Tracking Coordinator';
+    const actorRole = req.user?.employeeRole || req.user?.role || 'staff';
+
+    if (!booking.operationalNotes) booking.operationalNotes = [];
+    booking.operationalNotes.push({
+      timestamp: new Date(),
+      authorId: new mongoose.Types.ObjectId(req.user!.id),
+      authorName: actorName,
+      authorRole: actorRole,
+      noteType: 'CREW_CONTACT',
+      content: `Contacted ${crewMemberName || 'Crew'} (${crewPhone || 'driver'} via ${contactChannel.toUpperCase()}): ${note}`,
+      metadata: { crewMemberName, crewPhone, contactChannel, haltDurationMinutes },
+    });
+
+    await booking.save();
+
+    await logVendorAction(
+      req.user!.id,
+      req.user?.phone,
+      'CREW_CONTACT_LOGGED',
+      'Booking',
+      id,
+      `Contacted crew ${crewMemberName || ''} regarding ${haltDurationMinutes}m halt: ${note}`,
+      {
+        vendorId: vendorId.toString(),
+        actorName,
+        actorRole,
+        moveId: id,
+        crewMemberName,
+        crewPhone,
+        contactChannel,
+        haltDurationMinutes,
+        note,
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Crew contact note recorded successfully and broadcast to company operations feed.',
+      operationalNotes: booking.operationalNotes,
+    });
+  } catch (error: any) {
+    console.error('[logBookingCrewContact] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to record crew contact log' } });
+  }
+};
+
+// 11c. Send Customer Delay / Stagnation Advisory
+export const sendCustomerDelayAlert = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const vendorId = req.vendor._id;
+    const id = String(req.params.id);
+    const { reason, delayMinutes = 30, customNote } = req.body;
+
+    if (!reason || !reason.trim()) {
+      res.status(400).json({ error: { code: 'REASON_REQUIRED', message: 'Delay reason is required.' } });
+      return;
+    }
+
+    const booking = await Booking.findOne({ _id: id, vendorId }).populate('customerId', 'displayName phone email');
+    if (!booking) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Booking not found' } });
+      return;
+    }
+
+    // Operational scope verification
+    const delayScope = await resolveEmployeeOperationalScope(req.user, vendorId);
+    if (!delayScope.isCompanyWide && !delayScope.bookingIds.includes(booking._id.toString())) {
+      res.status(403).json({
+        error: {
+          code: 'UNAUTHORIZED_SCOPE',
+          message: 'Operational Scope Error: This move is outside your assigned operational scope.',
+        },
+      });
+      return;
+    }
+
+    const actorName = req.user?.displayName || req.user?.phone || 'Tracking Coordinator';
+    const actorRole = req.user?.employeeRole || req.user?.role || 'staff';
+    const delayNotice = `Customer Delay Notice: Estimated ${delayMinutes} mins delay due to: ${reason}.${customNote ? ` Note: ${customNote}` : ''}`;
+
+    if (!booking.operationalNotes) booking.operationalNotes = [];
+    booking.operationalNotes.push({
+      timestamp: new Date(),
+      authorId: new mongoose.Types.ObjectId(req.user!.id),
+      authorName: actorName,
+      authorRole: actorRole,
+      noteType: 'CUSTOMER_DELAY_ALERT',
+      content: delayNotice,
+      metadata: { reason, delayMinutes, customNote },
+    });
+
+    await booking.save();
+
+    // Directly notify Customer
+    if (booking.customerId?._id) {
+      await Notification.create({
+        recipientRole: 'customer',
+        recipientUserId: booking.customerId._id,
+        actorId: new mongoose.Types.ObjectId(req.user!.id),
+        actorName,
+        actorRole,
+        title: `Transit Delay Advisory — Move #${String(id).slice(-6).toUpperCase()}`,
+        message: `Your moving crew has advised an estimated ${delayMinutes} minutes delay due to: ${reason}. ${customNote || 'Our fleet team is monitoring the vehicle GPS.'}`,
+        type: 'MOVE_UPDATE',
+        targetType: 'Booking',
+        targetId: String(id),
+        metadata: { delayMinutes, reason, vendorId: vendorId.toString() },
+      }).catch((err) => console.warn('[Notification] Failed to notify customer of delay:', err));
+    }
+
+    // Log action and alert Vendor Admin
+    await logVendorAction(
+      req.user!.id,
+      req.user?.phone,
+      'CUSTOMER_DELAY_ALERT',
+      'Booking',
+      id,
+      `Dispatched delay advisory to customer (${delayMinutes}m delay): ${reason}`,
+      {
+        vendorId: vendorId.toString(),
+        actorName,
+        actorRole,
+        moveId: id,
+        customerName: (booking.customerId as any)?.displayName,
+        delayMinutes,
+        reason,
+        customNote,
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Customer delay notification dispatched and logged to company activity trail.',
+      operationalNotes: booking.operationalNotes,
+    });
+  } catch (error: any) {
+    console.error('[sendCustomerDelayAlert] Error:', error);
+    res.status(500).json({ error: { code: 'SERVER_ERROR', message: 'Failed to dispatch customer delay alert' } });
   }
 };
 
@@ -2093,8 +3884,10 @@ export const getVendorAuditLogs = async (req: AuthenticatedRequest, res: Respons
         { 'details.vendorId': vendorId.toString() },
       ],
     })
+      .populate('actorId', 'displayName phone role employeeRole email username')
       .sort({ createdAt: -1 })
-      .limit(50);
+      .limit(60)
+      .lean();
 
     res.status(200).json({ logs });
   } catch (error: any) {

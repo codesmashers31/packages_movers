@@ -12,6 +12,7 @@ import {
   getPermissions,
   updatePermission,
   getAdminEmployees,
+  getAdminEmployeeById,
   createAdminEmployee,
   updateAdminEmployee,
   resendAdminEmployeeCredentials,
@@ -89,14 +90,15 @@ router.patch('/users/:id', requirePermission('users:edit'), updateUser);
 
 // 3. Platform Administrative Staff Management
 router.get('/employees', requirePermission(['staff:view', 'staff:manage']), getAdminEmployees);
+router.get('/employees/:id', getAdminEmployeeById);
 router.post('/employees', requirePermission('staff:manage'), createAdminEmployee);
 router.patch('/employees/:id', requirePermission('staff:manage'), updateAdminEmployee);
 router.post('/employees/:id/resend-credentials', requirePermission('staff:manage'), resendAdminEmployeeCredentials);
 router.delete('/employees/:id', requirePermission('staff:manage'), deleteAdminEmployee);
 
 // 4. Roles & Permissions Management
-router.get('/roles', getRoles);
-router.get('/admin-roles', getAdminRoles);
+router.get('/roles', requirePermission(['roles:view', 'permissions:manage', 'staff:view']), getRoles);
+router.get('/admin-roles', requirePermission(['roles:view', 'permissions:manage', 'staff:view']), getAdminRoles);
 router.post('/roles', requirePermission('permissions:manage'), createAdminRole);
 router.put('/roles/:id', requirePermission('permissions:manage'), updateAdminRole);
 router.delete('/roles/:id', requirePermission('permissions:manage'), deleteAdminRole);
@@ -109,10 +111,22 @@ router.post('/vendors', requirePermission('vendors:approve'), createVendorCompan
 router.get('/vendors/:id', requirePermission('vendors:view'), getVendorById);
 router.patch('/vendors/:id', requirePermission(['vendors:approve', 'vendors:view']), updateVendorCompany);
 router.delete('/vendors/:id', requirePermission('vendors:approve'), deleteVendorCompany);
+
+// Decision / Review endpoints (supports PATCH and POST, /decision and /review)
 router.patch('/vendors/:id/decision', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorApplication);
+router.post('/vendors/:id/decision', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorApplication);
+router.patch('/vendors/:id/review', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorApplication);
+router.post('/vendors/:id/review', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorApplication);
+
+// Document review endpoints (supports PATCH and POST, with or without /review suffix)
 router.patch('/vendors/:id/documents/:docType', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorDocument);
+router.post('/vendors/:id/documents/:docType', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorDocument);
+router.patch('/vendors/:id/documents/:docType/review', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorDocument);
+router.post('/vendors/:id/documents/:docType/review', requirePermission(['vendors:approve', 'documents:verify']), reviewVendorDocument);
+
 router.get('/vendors/:vendorId/documents/:docType/view', requirePermission('vendors:view'), viewAdminVendorDocument);
 router.patch('/vendors/:id/suspend', requirePermission('vendors:suspend'), toggleVendorSuspension);
+router.post('/vendors/:id/suspend', requirePermission('vendors:suspend'), toggleVendorSuspension);
 router.get('/documents', requirePermission('vendors:view'), getAdminDocuments);
 
 // 5. Service Packages Catalog
@@ -136,7 +150,7 @@ router.get('/settings', requirePermission('settings:manage'), getSettings);
 router.put('/settings', requirePermission('settings:manage'), updateSettings);
 
 // 9. Audit Trail
-router.get('/audit-logs', getAuditLogs);
+router.get('/audit-logs', requirePermission(['audit:view', 'audit_logs:view']), getAuditLogs);
 
 // 10. Platform Admin Notifications Feed
 router.get('/notifications', getAdminNotifications);

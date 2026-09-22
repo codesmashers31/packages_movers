@@ -24,6 +24,7 @@ export interface ICustomRole {
 export interface IVendor extends Document {
   ownerId: mongoose.Types.ObjectId;
   businessName: string;
+  logoUrl?: string;
   contactEmail?: string;
   contactPhone: string;
   status: VendorStatus;
@@ -40,6 +41,7 @@ const VendorSchema = new Schema<IVendor>(
   {
     ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     businessName: { type: String, required: true },
+    logoUrl: { type: String },
     contactEmail: { type: String },
     contactPhone: { type: String, required: true },
     status: {

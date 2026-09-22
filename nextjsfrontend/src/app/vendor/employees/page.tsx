@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
 import PageHeader from "@/app/admin/components/PageHeader";
 import StatusBadge from "@/app/admin/components/StatusBadge";
 import {
   Users,
+  User,
   Plus,
   Search,
   RefreshCw,
@@ -34,6 +35,9 @@ interface Employee {
   username?: string;
   email?: string;
   employeeRole: string;
+  department?: string;
+  reportsTo?: { _id: string; displayName: string; username?: string; phone?: string; employeeRole?: string } | string;
+  directReportsCount?: number;
   skills?: string[];
   accountStatus: "active" | "suspended";
   availability: "AVAILABLE" | "ON_MOVE";
@@ -59,11 +63,16 @@ interface CreatedCredentialsModal {
 }
 
 export default function VendorEmployeesPage() {
+  const modalScrollRef = useRef<HTMLDivElement>(null);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [availableRoles, setAvailableRoles] = useState<RoleOption[]>([
     { id: "worker", name: "Crew Worker / Driver", isCustom: false },
+    { id: "operational_manager", name: "Operational Manager", isCustom: false },
+    { id: "tracking_coordinator", name: "Vehicle Tracking Coordinator", isCustom: false },
+    { id: "fleet_supervisor", name: "Fleet Supervisor", isCustom: false },
+    { id: "dispatch_coordinator", name: "Dispatch Coordinator", isCustom: false },
     { id: "operations", name: "Operations Staff", isCustom: false },
-    { id: "manager", name: "Manager", isCustom: false },
+    { id: "manager", name: "General Operations Manager", isCustom: false },
   ]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +86,27 @@ export default function VendorEmployeesPage() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [supervisorFilter, setSupervisorFilter] = useState("ALL");
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const uStr = localStorage.getItem("auth_user");
+      if (uStr) {
+        try { setCurrentUser(JSON.parse(uStr)); } catch {}
+      }
+    }
+    fetchApi<{ user: any }>("/auth/me").then((res) => {
+      if (res?.user) setCurrentUser(res.user);
+    }).catch(() => {});
+  }, []);
+
+  const isOwnerOrAdmin = currentUser?.role === "vendor" || currentUser?.role === "admin";
+  const userPerms: string[] = Array.isArray(currentUser?.permissions) ? currentUser.permissions : [];
+
+  const canManageRoles = isOwnerOrAdmin || userPerms.includes("*") || userPerms.includes("roles:manage") || userPerms.includes("permissions:manage");
+  const canCreateEmployee = isOwnerOrAdmin || userPerms.includes("*") || userPerms.includes("employees:create") || userPerms.includes("Onboard Employees");
+  const canEditEmployee = isOwnerOrAdmin || userPerms.includes("*") || userPerms.includes("employees:edit") || userPerms.includes("Edit Staff Accounts");
 
   // Modals
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -89,6 +119,8 @@ export default function VendorEmployeesPage() {
     displayName: "",
     phone: "",
     employeeRole: "worker",
+    department: "Operations",
+    reportsTo: "",
     skills: "Packing, Heavy Lifting",
     accountStatus: "active" as "active" | "suspended",
   });
@@ -101,6 +133,7 @@ export default function VendorEmployeesPage() {
       if (search) queryParams.append("search", search);
       if (roleFilter !== "ALL") queryParams.append("role", roleFilter);
       if (statusFilter !== "ALL") queryParams.append("status", statusFilter);
+      if (supervisorFilter !== "ALL") queryParams.append("supervisorId", supervisorFilter);
 
       const res = await fetchApi<{ employees: Employee[] }>(`/vendor/employees?${queryParams.toString()}`);
       setEmployees(res.employees || []);
@@ -157,7 +190,21 @@ export default function VendorEmployeesPage() {
 
   useEffect(() => {
     fetchEmployees();
-  }, [roleFilter, statusFilter]);
+  }, [roleFilter, statusFilter, supervisorFilter]);
+
+  const supervisorsList = useMemo(() => {
+    return employees.filter(
+      (e) =>
+        [
+          "operational_manager",
+          "fleet_supervisor",
+          "dispatch_coordinator",
+          "manager",
+          "tracking_coordinator",
+        ].includes((e.employeeRole || "").toLowerCase()) ||
+        (typeof e.directReportsCount === "number" && e.directReportsCount > 0)
+    );
+  }, [employees]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,6 +229,8 @@ export default function VendorEmployeesPage() {
           displayName: formData.displayName,
           phone: formData.phone,
           employeeRole: formData.employeeRole,
+          department: formData.department,
+          reportsTo: formData.reportsTo || undefined,
           skills: skillsArray,
         }),
       });
@@ -201,11 +250,22 @@ export default function VendorEmployeesPage() {
         });
       }
 
-      setFormData({ displayName: "", phone: "", employeeRole: "worker", skills: "Packing, Heavy Lifting", accountStatus: "active" });
+      setFormData({
+        displayName: "",
+        phone: "",
+        employeeRole: "worker",
+        department: "Operations",
+        reportsTo: "",
+        skills: "Packing, Heavy Lifting",
+        accountStatus: "active",
+      });
       fetchEmployees();
       setTimeout(() => setSuccess(null), 5000);
     } catch (err: any) {
       setModalError(err.message || "Failed to add employee");
+      setTimeout(() => {
+        modalScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      }, 50);
     } finally {
       setSubmitting(false);
     }
@@ -256,6 +316,8 @@ export default function VendorEmployeesPage() {
         body: JSON.stringify({
           displayName: formData.displayName,
           employeeRole: formData.employeeRole,
+          department: formData.department,
+          reportsTo: formData.reportsTo || undefined,
           skills: skillsArray,
           accountStatus: formData.accountStatus,
         }),
@@ -268,6 +330,9 @@ export default function VendorEmployeesPage() {
       setTimeout(() => setSuccess(null), 4000);
     } catch (err: any) {
       setModalError(err.message || "Failed to update employee");
+      setTimeout(() => {
+        modalScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      }, 50);
     } finally {
       setSubmitting(false);
     }
@@ -281,6 +346,8 @@ export default function VendorEmployeesPage() {
       displayName: emp.displayName,
       phone: emp.phone,
       employeeRole: emp.employeeRole,
+      department: emp.department || "Operations",
+      reportsTo: typeof emp.reportsTo === "object" ? (emp.reportsTo as any)?._id : (emp.reportsTo || ""),
       skills: (emp.skills || []).join(", "),
       accountStatus: emp.accountStatus,
     });
@@ -294,22 +361,26 @@ export default function VendorEmployeesPage() {
         description="Manage logistics operators, drivers, and supervisory staff belonging to your company."
       >
         <div className="flex items-center gap-2.5">
-          <Link
-            href="/vendor/roles"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
-            title="Configure Roles & Rules"
-          >
-            <Shield size={14} className="text-blue-600" />
-            <span className="hidden md:inline">Roles & Rules</span>
-          </Link>
-          <Link
-            href="/vendor/permissions"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
-            title="Permissions Matrix"
-          >
-            <KeyRound size={14} className="text-sky-600" />
-            <span className="hidden md:inline">Permissions</span>
-          </Link>
+          {canManageRoles && (
+            <Link
+              href="/vendor/roles"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
+              title="Configure Roles & Rules"
+            >
+              <Shield size={14} className="text-blue-600" />
+              <span className="hidden md:inline">Roles & Rules</span>
+            </Link>
+          )}
+          {canManageRoles && (
+            <Link
+              href="/vendor/permissions"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
+              title="Permissions Matrix"
+            >
+              <KeyRound size={14} className="text-sky-600" />
+              <span className="hidden md:inline">Permissions</span>
+            </Link>
+          )}
           <button
             onClick={() => {
               fetchEmployees();
@@ -323,25 +394,29 @@ export default function VendorEmployeesPage() {
             <span className="hidden sm:inline">Refresh</span>
           </button>
 
-          <button
-            onClick={() => {
-              fetchAvailableRoles();
-              setModalError(null);
-              setError(null);
-              setFormData({
-                displayName: "",
-                phone: "",
-                employeeRole: availableRoles[0]?.id || "worker",
-                skills: "Packing, Heavy Lifting",
-                accountStatus: "active",
-              });
-              setAddModalOpen(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
-          >
-            <Plus size={15} />
-            <span>Add Crew Member</span>
-          </button>
+          {canCreateEmployee && (
+            <button
+              onClick={() => {
+                fetchAvailableRoles();
+                setModalError(null);
+                setError(null);
+                setFormData({
+                  displayName: "",
+                  phone: "",
+                  employeeRole: availableRoles[0]?.id || "worker",
+                  department: "Operations",
+                  reportsTo: "",
+                  skills: "Packing, Heavy Lifting",
+                  accountStatus: "active",
+                });
+                setAddModalOpen(true);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
+            >
+              <Plus size={15} />
+              <span>Add Crew Member</span>
+            </button>
+          )}
         </div>
       </PageHeader>
 
@@ -418,6 +493,22 @@ export default function VendorEmployeesPage() {
             <option value="active">Active</option>
             <option value="suspended">Suspended</option>
           </select>
+
+          {supervisorsList.length > 0 && (
+            <select
+              value={supervisorFilter}
+              onChange={(e) => setSupervisorFilter(e.target.value)}
+              className="px-3 py-2 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-semibold text-slate-800 outline-none cursor-pointer focus:bg-white focus:border-blue-500 transition"
+              title="Filter crew working under a specific supervisor"
+            >
+              <option value="ALL">All Supervisors / Entire Company</option>
+              {supervisorsList.map((sup) => (
+                <option key={sup._id} value={sup._id}>
+                  Supervised by: {sup.displayName} ({sup.directReportsCount || 0} crew)
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
@@ -459,7 +550,13 @@ export default function VendorEmployeesPage() {
                           {emp.displayName.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <p className="font-bold text-slate-900">{emp.displayName}</p>
+                          <Link
+                            href={`/vendor/employees/${emp._id}`}
+                            className="font-bold text-slate-900 hover:text-blue-600 transition block"
+                            title="View Individual Employee Record"
+                          >
+                            {emp.displayName}
+                          </Link>
                           <p className="text-[11px] text-slate-500 font-mono">{emp.phone}</p>
                         </div>
                       </div>
@@ -479,25 +576,35 @@ export default function VendorEmployeesPage() {
                     </td>
 
                     <td className="py-3.5 px-4 font-semibold text-slate-800">
-                      {(() => {
-                        const r = availableRoles.find(
-                          (role) =>
-                            role.id === emp.employeeRole ||
-                            role.name.toLowerCase() === (emp.employeeRole || "").toLowerCase()
-                        );
-                        return r ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            <span>{r.name}</span>
-                            {r.isCustom && (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                                Custom
-                              </span>
-                            )}
+                      <div>
+                        {(() => {
+                          const r = availableRoles.find(
+                            (role) =>
+                              role.id === emp.employeeRole ||
+                              role.name.toLowerCase() === (emp.employeeRole || "").toLowerCase()
+                          );
+                          return (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span>{r?.name || emp.employeeRole || "Crew Worker"}</span>
+                              {r?.isCustom && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                  Custom
+                                </span>
+                              )}
+                            </span>
+                          );
+                        })()}
+                        {emp.reportsTo && (
+                          <p className="text-[10px] text-slate-500 font-normal mt-0.5">
+                            Reports to: <span className="font-semibold text-blue-600">{typeof emp.reportsTo === "object" ? emp.reportsTo.displayName : "Manager"}</span>
+                          </p>
+                        )}
+                        {typeof emp.directReportsCount === "number" && emp.directReportsCount > 0 && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 mt-1 inline-block">
+                            {emp.directReportsCount} Supervised Crew
                           </span>
-                        ) : (
-                          emp.employeeRole || "Crew Worker"
-                        );
-                      })()}
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-3.5 px-4">
@@ -536,21 +643,48 @@ export default function VendorEmployeesPage() {
                     </td>
 
                     <td className="py-3.5 px-5 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => handleResendWhatsApp(emp)}
-                          className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 border border-emerald-200/60 transition cursor-pointer"
-                          title="View / Send Credentials to WhatsApp"
+                      <div className="flex items-center justify-end gap-1.5">
+                        <a
+                          href={`tel:${emp.phone}`}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 border border-slate-200/60 transition cursor-pointer"
+                          title={`Call ${emp.displayName} directly`}
                         >
-                          <MessageCircle size={14} />
-                        </button>
-                        <button
-                          onClick={() => openEditModal(emp)}
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200/60 transition cursor-pointer"
-                          title="Edit Employee"
+                          <Phone size={13} />
+                        </a>
+                        <a
+                          href={`https://wa.me/${emp.phone.replace(/\D/g, "").length === 10 ? `91${emp.phone.replace(/\D/g, "")}` : emp.phone.replace(/\D/g, "")}?text=${encodeURIComponent(`Hello ${emp.displayName}, operational check-in from fleet dispatch.`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 border border-slate-200/60 transition cursor-pointer"
+                          title={`Chat with ${emp.displayName} on WhatsApp`}
                         >
-                          <Edit2 size={14} />
-                        </button>
+                          <MessageCircle size={13} />
+                        </a>
+                        <Link
+                          href={`/vendor/employees/${emp._id}`}
+                          className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 border border-blue-200/60 transition cursor-pointer"
+                          title="View Individual Employee Profile"
+                        >
+                          <User size={13} />
+                        </Link>
+                        {canEditEmployee && (
+                          <button
+                            onClick={() => handleResendWhatsApp(emp)}
+                            className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 border border-emerald-200/60 transition cursor-pointer"
+                            title="View / Send Credentials to WhatsApp"
+                          >
+                            <KeyRound size={13} />
+                          </button>
+                        )}
+                        {canEditEmployee && (
+                          <button
+                            onClick={() => openEditModal(emp)}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 border border-slate-200/60 transition cursor-pointer"
+                            title="Edit Employee"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -563,8 +697,11 @@ export default function VendorEmployeesPage() {
 
       {/* Add / Edit Modal */}
       {(addModalOpen || editingEmployee) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 sm:p-7 max-w-md w-full space-y-5 animate-scaleUp">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/50 backdrop-blur-xs overflow-y-auto">
+          <div
+            ref={modalScrollRef}
+            className="bg-white rounded-2xl shadow-xl border border-slate-200 p-5 sm:p-7 max-w-md w-full my-auto max-h-[calc(100vh-2rem)] overflow-y-auto space-y-4 animate-scaleUp"
+          >
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div className="flex items-center gap-2.5">
                 <div className="h-9 w-9 rounded-xl bg-blue-50 text-blue-600 border border-blue-200/60 flex items-center justify-center">
@@ -716,6 +853,51 @@ export default function VendorEmployeesPage() {
               </div>
 
               <div>
+                <label className="block font-bold text-slate-800 mb-1.5">Department</label>
+                <select
+                  value={formData.department}
+                  onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 rounded-xl border border-slate-200 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 outline-none font-medium text-xs transition text-slate-800 cursor-pointer"
+                >
+                  <option value="Operations">Operations & Field Dispatch</option>
+                  <option value="Fleet & Transport">Fleet & Transport</option>
+                  <option value="Dispatch & Planning">Dispatch & Planning</option>
+                  <option value="Customer Care">Customer Care & Support</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-800 mb-1.5">Reports To (Supervisor / Manager)</label>
+                <select
+                  value={formData.reportsTo}
+                  onChange={(e) => setFormData({ ...formData, reportsTo: e.target.value })}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 rounded-xl border border-slate-200 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 outline-none font-medium text-xs transition text-slate-800 cursor-pointer"
+                >
+                  <option value="">Direct to Carrier Managing Director (Owner)</option>
+                  {employees
+                    .filter((e) => {
+                      if (editingEmployee && e._id === editingEmployee._id) return false;
+                      const r = (e.employeeRole || "").toLowerCase();
+                      return [
+                        "manager",
+                        "operations",
+                        "operational_manager",
+                        "fleet_supervisor",
+                        "dispatch_coordinator",
+                      ].includes(r);
+                    })
+                    .map((mgr) => (
+                      <option key={mgr._id} value={mgr._id}>
+                        {mgr.displayName} ({mgr.employeeRole?.replace(/_/g, " ") || "Manager"})
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Assign an Operational Manager or Supervisor who oversees this employee&apos;s daily moves.
+                </p>
+              </div>
+
+              <div>
                 <label className="block font-bold text-slate-800 mb-1.5">Operational Skills (comma separated)</label>
                 <input
                   type="text"
@@ -770,8 +952,8 @@ export default function VendorEmployeesPage() {
 
       {/* Generated Credentials & WhatsApp Delivery Dialog */}
       {createdCredentials && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 sm:p-7 max-w-lg w-full space-y-5 animate-scaleUp">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/50 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-5 sm:p-7 max-w-lg w-full my-auto max-h-[calc(100vh-2rem)] overflow-y-auto space-y-4 animate-scaleUp">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200">

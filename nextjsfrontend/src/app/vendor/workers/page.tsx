@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
 import PageHeader from "@/app/admin/components/PageHeader";
+import { hasPermissionKey } from "@/lib/vendorPermissionsDef";
 import {
   HardHat,
   RefreshCw,
@@ -33,6 +34,31 @@ export default function VendorWorkersPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("ALL");
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const userStr = localStorage.getItem("auth_user");
+      if (userStr) {
+        try {
+          setCurrentUser(JSON.parse(userStr));
+        } catch {}
+      }
+    }
+    fetchApi<{ user: any }>("/auth/me")
+      .then((res) => {
+        if (res?.user) setCurrentUser(res.user);
+      })
+      .catch(() => {});
+  }, []);
+
+  const isOwner = currentUser?.role === "vendor" || currentUser?.role === "admin";
+  const userPerms = useMemo(() => {
+    return Array.isArray(currentUser?.permissions) ? currentUser.permissions : [];
+  }, [currentUser]);
+
+  const canManageCrew = isOwner || hasPermissionKey(userPerms, "workers:manage") || hasPermissionKey(userPerms, "employees:view");
+  const canAssignCrew = isOwner || hasPermissionKey(userPerms, "workers:assign");
 
   const fetchWorkers = async () => {
     try {
@@ -84,13 +110,15 @@ export default function VendorWorkersPage() {
             <span>Refresh</span>
           </button>
 
-          <Link
-            href="/vendor/employees"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
-          >
-            <Plus size={15} />
-            <span>Manage Crew</span>
-          </Link>
+          {canManageCrew && (
+            <Link
+              href="/vendor/employees"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-xs transition cursor-pointer"
+            >
+              <Plus size={15} />
+              <span>Manage Crew</span>
+            </Link>
+          )}
         </div>
       </PageHeader>
 
@@ -259,12 +287,18 @@ export default function VendorWorkersPage() {
 
                     <td className="py-3.5 px-6 text-right">
                       {w.availability === "AVAILABLE" ? (
-                        <Link
-                          href="/vendor/bookings"
-                          className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-700 border border-blue-200/80 transition"
-                        >
-                          <span>Assign Job</span>
-                        </Link>
+                        canAssignCrew ? (
+                          <Link
+                            href="/vendor/bookings"
+                            className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-blue-50 hover:bg-blue-100 text-xs font-semibold text-blue-700 border border-blue-200/80 transition"
+                          >
+                            <span>Assign Job</span>
+                          </Link>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 text-[11px] font-semibold text-emerald-700 border border-emerald-200/60">
+                            Ready
+                          </span>
+                        )
                       ) : (
                         <span className="text-[11px] text-slate-400 font-medium">Busy</span>
                       )}
