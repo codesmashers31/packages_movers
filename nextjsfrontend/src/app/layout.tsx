@@ -19,8 +19,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} font-sans`}>
-      <body className="antialiased font-sans text-[#1E293B] bg-[#EEF2F6] selection:bg-[#2563EB] selection:text-white min-h-screen">
+    <html lang="en" className={`${inter.variable} font-sans`} suppressHydrationWarning>
+      <body
+        className="antialiased font-sans text-slate-900 bg-[#F8FAFC] selection:bg-blue-600 selection:text-white min-h-screen"
+        suppressHydrationWarning
+      >
         {children}
       </body>
     </html>
