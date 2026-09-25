@@ -9,3 +9,8 @@ npm-debug.*
 *.mobileprovision
 *.orig.*
 .DS_Store
+android/
+ios/
+test-results/
+playwright-report/
+artifacts/
