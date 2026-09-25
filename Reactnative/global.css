@@ -1,0 +1,21 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css";
+@import "nativewind/theme";
+
+/* Match native and browser spacing: h-11 must be a 44dp touch target. */
+:root {
+  font-size: 16px;
+}
+
+@theme {
+  --color-brand: #6125c5;
+  --color-brand-dark: #36116d;
+  --color-lilac: #f0e8ff;
+  --color-coral: #f46055;
+  --color-ink: #241a36;
+  --color-muted: #766d84;
+  --color-canvas: #faf9fd;
+  --color-line: #eae5f0;
+  --color-mint: #e4f5eb;
+}
