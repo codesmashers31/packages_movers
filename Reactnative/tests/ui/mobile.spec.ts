@@ -1,9 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { register } from "./support";
 
 test("phone layout and complete local moving preview", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
+  await register(page);
   await expect(page.getByRole("button", { name: "Plan my move" })).toBeVisible({
     timeout: 90_000,
   });
@@ -50,7 +52,9 @@ test("phone layout and complete local moving preview", async ({ page }) => {
   await expect(page.getByText("SAVED DEMO PLAN")).toBeVisible();
   await expect
     .poll(() =>
-      page.evaluate(() => localStorage.getItem("local-movers-design-v1")),
+      page.evaluate(() =>
+        localStorage.getItem("local-movers-design-v1:bala@example.com"),
+      ),
     )
     .toContain("Neighbourhood Movers");
   await page.reload();
@@ -69,6 +73,7 @@ test("phone layout and complete local moving preview", async ({ page }) => {
 test("compact phone layout has no horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.goto("/");
+  await register(page);
   await expect(
     page.getByRole("button", { name: "Plan my move" }),
   ).toBeVisible();

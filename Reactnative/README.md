@@ -60,6 +60,9 @@ References: [NativeWind v5 installation](https://www.nativewind.dev/v5/getting-s
 
 ## Design and implemented interactions
 
+- Email-only login and registration UI: name/email registration, six-digit OTP entry, change email, resend cooldown, expiry, validation and logout. No phone, password or social login.
+- **Local UI demo only:** register first, then use the visible preview code **123456**. No email is sent and email ownership is not verified. Profiles and the active session persist through AsyncStorage (browser preview uses localStorage). This is not production authentication and stores no server credentials or tokens. Clearing app data removes the local accounts.
+- Returning local accounts can log in with email and the same preview code. Each profile has its own locally saved moving draft and demo booking. Signing out retains that profile’s plans for the next local login.
 - Home: locality picker, searchable service categories, moving illustration, draft entry, preparation guide.
 - Move planner: pickup/drop-off → home/date/access → item counters/notes → services → review.
 - Quote comparison: illustrative itemized prices, inclusions/exclusions, sorting and selection.
@@ -73,23 +76,23 @@ Visual language: violet `#6125C5`, coral `#F46055`, warm pastel service cards, d
 ## Working process from here
 
 1. Review this mobile UI on 360–430 dp phones, including large font settings and keyboard behavior. Confirm brand name, launch city and languages.
-2. Add phone/OTP authentication and server-authorized customer/worker membership.
+2. Replace the local email/OTP preview with server-verified email authentication, secure session storage and server-authorized customer/worker membership.
 3. Connect catalog, coverage validation, request revisions, custom inventory and private photo uploads.
 4. Replace example quotes with authorized vendor offers, expiry checks, full terms and immutable acceptance snapshots.
 5. Add server-confirmed payments, assignments, milestones, delivery proof, cancellation and support.
 6. Test authorization, duplicate submissions, offline reconciliation, payment failures and the complete customer/worker journey before a pilot.
 
-This is a functional **UI preview**, not a live marketplace. The API client is not called by these screens. No OTP, coverage, vendor verification, real ratings, GPS tracking, payment, messaging or real booking creation is simulated as live. Business rules marked undecided in the source documents remain undecided.
+This is a functional **UI preview**, not a live marketplace. The API client is not called by these screens. Email OTP is explicitly a local demo. No coverage, vendor verification, real ratings, GPS tracking, payment, messaging or real booking creation is simulated as live. Business rules marked undecided in the source documents remain undecided.
 
 ## Verification
 
 - TypeScript check: passed.
 - Request validation, itemized quote and native 44dp touch-target checks: 7 passed.
-- Phone browser checks: 2 passed, covering the full demo booking journey, persistence, worker entry, locality selection, search and 360px overflow.
+- Phone browser checks: 5 passed, covering email registration/login/logout, OTP validation/expiry/resend, session persistence, account-specific drafts, full demo booking journey, worker entry, locality selection, search and 360px overflow.
 - Expo Doctor: 21/21 passed.
 - Android prebuild and Android / web production bundle exports: passed.
 - Native Android x86_64 debug APK assembly: passed (`android/app/build/outputs/apk/debug/app-debug.apk`).
-- Visual review screenshots: `artifacts/home-mobile.png` and `artifacts/quotes-mobile.png`.
+- Visual review screenshots: `artifacts/login-mobile.png`, `artifacts/register-mobile.png`, `artifacts/otp-mobile.png`, `artifacts/home-mobile.png` and `artifacts/quotes-mobile.png`.
 
 ## Structure
 
@@ -101,6 +104,7 @@ src/navigation/              Customer tabs and native stack
 src/screens/                 Customer and worker mobile screens
 src/data/moving.ts           Sample catalog, quotes and validation
 src/state/MoveContext.tsx    Local preview state and persistence
+src/state/AuthContext.tsx    Device-local email/OTP preview and saved session
 tests/moving.test.mjs        Request validation and quote total tests
 ```
 

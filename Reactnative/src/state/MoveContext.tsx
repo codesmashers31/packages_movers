@@ -13,15 +13,21 @@ type Store = {
   storageError: boolean;
 };
 const Context = createContext<Store | null>(null);
-const KEY = "local-movers-design-v1";
-export function MoveProvider({ children }: { children: React.ReactNode }) {
+export function MoveProvider({
+  children,
+  accountKey,
+}: {
+  children: React.ReactNode;
+  accountKey: string;
+}) {
+  const storageKey = `local-movers-design-v1:${accountKey}`;
   const [draft, setDraft] = useState(initialDraft);
   const [booking, setBooking] = useState<DemoBooking | null>(null);
   const [locality, setLocality] = useState("Chennai");
   const [ready, setReady] = useState(false);
   const [storageError, setStorageError] = useState(false);
   useEffect(() => {
-    AsyncStorage.getItem(KEY)
+    AsyncStorage.getItem(storageKey)
       .then((raw) => {
         if (!raw) return;
         const saved = JSON.parse(raw);
@@ -40,19 +46,19 @@ export function MoveProvider({ children }: { children: React.ReactNode }) {
       })
       .catch(() => setStorageError(true))
       .finally(() => setReady(true));
-  }, []);
+  }, [storageKey]);
   useEffect(() => {
     if (!ready) return;
     const timer = setTimeout(() => {
       AsyncStorage.setItem(
-        KEY,
+        storageKey,
         JSON.stringify({ version: 1, draft, booking, locality }),
       )
         .then(() => setStorageError(false))
         .catch(() => setStorageError(true));
     }, 250);
     return () => clearTimeout(timer);
-  }, [draft, booking, locality, ready]);
+  }, [draft, booking, locality, ready, storageKey]);
   const bookDemo = (quote: Quote) =>
     setBooking({
       id: `DEMO-${Date.now().toString().slice(-6)}`,
