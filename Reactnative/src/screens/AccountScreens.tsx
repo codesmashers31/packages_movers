@@ -5,6 +5,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../types";
 import { Page, T, Button, Icon, Note, type IconName } from "../components/ui";
 import { useMove } from "../state/MoveContext";
+import { useAuth } from "../state/AuthContext";
 
 function useAppNavigation() {
   return useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -70,8 +71,8 @@ export function MovesScreen() {
         onPress={() => navigation.navigate("Customer")}
       />
       <Note>
-        Demo plans are saved locally. Live booking history will appear after
-        sign-in and backend integration.
+        Demo plans are saved locally for this profile. Live booking history
+        needs backend integration.
       </Note>
     </Page>
   );
@@ -124,6 +125,19 @@ export function UpdatesScreen() {
 export function ProfileScreen() {
   const navigation = useAppNavigation();
   const { locality } = useMove();
+  const { user, logout } = useAuth();
+  const [error, setError] = useState("");
+  const [leaving, setLeaving] = useState(false);
+  const signOut = async () => {
+    setLeaving(true);
+    setError("");
+    try {
+      await logout();
+    } catch (e) {
+      setError((e as Error).message);
+      setLeaving(false);
+    }
+  };
   return (
     <Page
       title="Your space"
@@ -134,18 +148,19 @@ export function ProfileScreen() {
         <View className="h-16 w-16 items-center justify-center rounded-full bg-[#8450D4]">
           <Icon name="user" size={30} color="white" />
         </View>
-        <View>
+        <View className="flex-1">
           <T weight="heavy" className="text-xl text-white">
-            Hello, neighbour.
+            Hello, {user?.name}.
           </T>
           <T className="mt-2 text-xs text-[#E0CFF8]">
-            {locality} · Guest preview
+            {locality} · Local profile
           </T>
+          <T className="mt-2 text-xs text-white">{user?.email}</T>
         </View>
       </View>
       <Note>
-        You’re exploring the mobile design. Login, real vendor quotes, payments
-        and support messages are not connected yet.
+        Your email profile is saved on this device for the UI preview. Real
+        vendor quotes, payments and support messages are not connected yet.
       </Note>
       <View className="overflow-hidden rounded-2xl border border-line bg-white">
         {(
@@ -192,6 +207,14 @@ export function ProfileScreen() {
           </Pressable>
         ))}
       </View>
+      {Boolean(error) && <Note error>{error}</Note>}
+      <Button
+        title={leaving ? "Signing out…" : "Log out"}
+        icon="log-out"
+        secondary
+        disabled={leaving}
+        onPress={() => void signOut()}
+      />
       <T className="text-center text-xs text-muted">
         Local Movers · Made for your next chapter.
       </T>

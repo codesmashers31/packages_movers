@@ -10,6 +10,18 @@ import { Manrope_700Bold } from "@expo-google-fonts/manrope/700Bold";
 import { Manrope_800ExtraBold } from "@expo-google-fonts/manrope/800ExtraBold";
 import { AppNavigator } from "./src/navigation/AppNavigator";
 import { MoveProvider } from "./src/state/MoveContext";
+import { AuthProvider, useAuth } from "./src/state/AuthContext";
+import { AuthScreen } from "./src/screens/AuthScreen";
+
+function Session() {
+  const { user } = useAuth();
+  if (!user) return <AuthScreen />;
+  return (
+    <MoveProvider key={user.email} accountKey={user.email}>
+      <AppNavigator />
+    </MoveProvider>
+  );
+}
 
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -42,9 +54,9 @@ export default function App() {
       >
         <SafeAreaProvider>
           <StatusBar style="dark" />
-          <MoveProvider>
-            <AppNavigator />
-          </MoveProvider>
+          <AuthProvider>
+            <Session />
+          </AuthProvider>
         </SafeAreaProvider>
       </View>
     </View>
