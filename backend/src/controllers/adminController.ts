@@ -444,7 +444,7 @@ export const getUsers = async (req: AuthenticatedRequest, res: Response): Promis
   try {
     const { search, role, status, sortBy = 'createdAt', sortOrder = 'desc', page = '1', limit = '10' } = req.query;
 
-    const query: any = {};
+    const query: any = { role: { $in: ['operations_manager', 'operations_executive'] } };
     if (role && role !== 'all') query.role = role;
     if (status && status !== 'all') query.accountStatus = status;
 
@@ -618,24 +618,6 @@ export const getRoles = async (req: AuthenticatedRequest, res: Response): Promis
         userCount: countMap['admin'] || 0,
       },
       {
-        id: 'vendor',
-        code: 'VENDOR',
-        name: 'Logistics Vendor',
-        description: 'Verified fleet and moving service provider submitting quotes and coordinating crew dispatches.',
-        scope: 'Move Bidding & Fleet Fulfillment',
-        permissions: permsMap['vendor'] || [],
-        userCount: countMap['vendor'] || 0,
-      },
-      {
-        id: 'worker',
-        code: 'WORKER',
-        name: 'Field Worker / Driver',
-        description: 'Assigned crew member handling loading, transit updates, delivery codes, and client handoffs.',
-        scope: 'Physical Execution & Milestone Tracking',
-        permissions: permsMap['worker'] || [],
-        userCount: countMap['worker'] || 0,
-      },
-      {
         id: 'customer',
         code: 'CUSTOMER',
         name: 'Customer',
@@ -643,6 +625,24 @@ export const getRoles = async (req: AuthenticatedRequest, res: Response): Promis
         scope: 'Move Requests & Confirmation',
         permissions: permsMap['customer'] || [],
         userCount: countMap['customer'] || 0,
+      },
+      {
+        id: 'operations_manager',
+        code: 'OPERATIONS_MANAGER',
+        name: 'Operations Manager',
+        description: 'Oversees day-to-day operations, vendor management, employee coordination, and workflows.',
+        scope: 'Operations Management',
+        permissions: permsMap['operations_manager'] || [],
+        userCount: countMap['operations_manager'] || 0,
+      },
+      {
+        id: 'operations_executive',
+        code: 'OPERATIONS_EXECUTIVE',
+        name: 'Operations Executive',
+        description: 'Handles operational tasks, vendor data, request processing, and administrative support.',
+        scope: 'Operational Execution',
+        permissions: permsMap['operations_executive'] || [],
+        userCount: countMap['operations_executive'] || 0,
       },
     ];
 
@@ -683,7 +683,7 @@ export const updatePermission = async (req: AuthenticatedRequest, res: Response)
   try {
     const { role, permissionKey, granted } = req.body;
 
-    const validRoles = ['admin', 'vendor', 'worker', 'customer'];
+    const validRoles = ['admin', 'customer', 'operations_manager', 'operations_executive'];
     if (!role || !validRoles.includes(role)) {
       res.status(400).json({ error: { code: 'BAD_REQUEST', message: `Invalid role: ${role}` } });
       return;

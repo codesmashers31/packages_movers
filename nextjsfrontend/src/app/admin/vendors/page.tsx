@@ -776,7 +776,7 @@ export default function AdminVendorsPage() {
       {/* Top Metric Cards Strip (Visual Anchors) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Total Fleet */}
-        <div className="bg-[#EEF2F6] p-4 rounded-2xl shadow-neu-flat border border-white/80 flex items-center justify-between transition-all">
+        <div className="bg-slate-100 hover:bg-slate-200 hover:-translate-y-1 hover:shadow-lg p-4 rounded-2xl shadow-neu-flat border border-slate-200 flex items-center justify-between transition-all duration-300 cursor-pointer">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
               Total Fleet Vendors
@@ -784,13 +784,13 @@ export default function AdminVendorsPage() {
             <p className="text-2xl font-bold text-[#1E293B] mt-1 font-mono">{allVendorCount}</p>
             <p className="text-[11px] text-[#64748B] mt-0.5">Registered moving companies</p>
           </div>
-          <div className="h-11 w-11 rounded-xl bg-[#EEF2F6] shadow-neu-flat border border-white/80 flex items-center justify-center text-[#1E293B] shrink-0">
+          <div className="h-11 w-11 rounded-xl bg-white shadow-sm border border-slate-200 flex items-center justify-center text-[#1E293B] shrink-0">
             <Store size={20} />
           </div>
         </div>
 
         {/* Card 2: Approved Active */}
-        <div className="bg-[#EEF2F6] p-4 rounded-2xl shadow-neu-flat border border-white/80 flex items-center justify-between transition-all">
+        <div className="bg-teal-50 hover:bg-teal-100 hover:-translate-y-1 hover:shadow-lg p-4 rounded-2xl shadow-neu-flat border border-teal-100 flex items-center justify-between transition-all duration-300 cursor-pointer">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
               Active & Approved
@@ -798,13 +798,13 @@ export default function AdminVendorsPage() {
             <p className="text-2xl font-bold text-[#14B8A6] mt-1 font-mono">{approvedCount}</p>
             <p className="text-[11px] text-[#64748B] mt-0.5">Dispatch & quote ready</p>
           </div>
-          <div className="h-11 w-11 rounded-xl bg-teal-50 border border-teal-200/80 flex items-center justify-center text-[#14B8A6] shrink-0">
+          <div className="h-11 w-11 rounded-xl bg-white shadow-sm border border-teal-200/80 flex items-center justify-center text-[#14B8A6] shrink-0">
             <CheckCircle2 size={20} />
           </div>
         </div>
 
         {/* Card 3: Pending Review */}
-        <div className="bg-[#EEF2F6] p-4 rounded-2xl shadow-neu-flat border border-white/80 flex items-center justify-between transition-all">
+        <div className="bg-amber-50 hover:bg-amber-100 hover:-translate-y-1 hover:shadow-lg p-4 rounded-2xl shadow-neu-flat border border-amber-100 flex items-center justify-between transition-all duration-300 cursor-pointer">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
               Pending Review
@@ -812,13 +812,13 @@ export default function AdminVendorsPage() {
             <p className="text-2xl font-bold text-[#F59E0B] mt-1 font-mono">{pendingCount}</p>
             <p className="text-[11px] text-[#64748B] mt-0.5">Awaiting authorization</p>
           </div>
-          <div className="h-11 w-11 rounded-xl bg-amber-50 border border-amber-200/80 flex items-center justify-center text-[#F59E0B] shrink-0">
+          <div className="h-11 w-11 rounded-xl bg-white shadow-sm border border-amber-200/80 flex items-center justify-center text-[#F59E0B] shrink-0">
             <FileCheck2 size={20} />
           </div>
         </div>
 
         {/* Card 4: Suspended Fleet */}
-        <div className="bg-[#EEF2F6] p-4 rounded-2xl shadow-neu-flat border border-white/80 flex items-center justify-between transition-all">
+        <div className="bg-rose-50 hover:bg-rose-100 hover:-translate-y-1 hover:shadow-lg p-4 rounded-2xl shadow-neu-flat border border-rose-100 flex items-center justify-between transition-all duration-300 cursor-pointer">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
               Suspended Fleet
@@ -826,7 +826,7 @@ export default function AdminVendorsPage() {
             <p className="text-2xl font-bold text-rose-600 mt-1 font-mono">{suspendedCount}</p>
             <p className="text-[11px] text-[#64748B] mt-0.5">Blocked from platform leads</p>
           </div>
-          <div className="h-11 w-11 rounded-xl bg-rose-50 border border-rose-200/80 flex items-center justify-center text-rose-600 shrink-0">
+          <div className="h-11 w-11 rounded-xl bg-white shadow-sm border border-rose-200/80 flex items-center justify-center text-rose-600 shrink-0">
             <Ban size={20} />
           </div>
         </div>
@@ -838,6 +838,37 @@ export default function AdminVendorsPage() {
         <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto pb-1 md:pb-0">
           {statusTabs.map((tab) => {
             const isSelected = statusFilter === tab.key;
+            
+            const getActiveClasses = (key: string) => {
+              if (!isSelected) {
+                switch(key) {
+                  case "all": return "text-[#64748B] hover:text-slate-800 hover:bg-slate-100 hover:shadow-neu-raised-sm border border-transparent";
+                  case "approved": return "text-[#64748B] hover:text-teal-800 hover:bg-teal-50 hover:shadow-neu-raised-sm border border-transparent";
+                  case "pending": return "text-[#64748B] hover:text-amber-800 hover:bg-amber-50 hover:shadow-neu-raised-sm border border-transparent";
+                  case "suspended": return "text-[#64748B] hover:text-rose-800 hover:bg-rose-50 hover:shadow-neu-raised-sm border border-transparent";
+                  default: return "text-[#64748B] hover:text-[#1E293B] hover:shadow-neu-raised-sm";
+                }
+              }
+              switch(key) {
+                case "all": return "bg-slate-200 shadow-neu-raised-sm text-slate-800 font-bold border border-slate-300";
+                case "approved": return "bg-teal-100 shadow-neu-raised-sm text-teal-800 font-bold border border-teal-200";
+                case "pending": return "bg-amber-100 shadow-neu-raised-sm text-amber-800 font-bold border border-amber-200";
+                case "suspended": return "bg-rose-100 shadow-neu-raised-sm text-rose-800 font-bold border border-rose-200";
+                default: return "bg-[#EEF2F6] shadow-neu-raised-sm text-[#2563EB] font-bold border border-white/80";
+              }
+            };
+
+            const getBadgeClasses = (key: string) => {
+              if (!isSelected) return "bg-[#EEF2F6] shadow-neu-flat border border-white/80 text-[#64748B]";
+              switch(key) {
+                case "all": return "bg-slate-700 text-white shadow-sm";
+                case "approved": return "bg-teal-700 text-white shadow-sm";
+                case "pending": return "bg-amber-600 text-white shadow-sm";
+                case "suspended": return "bg-rose-700 text-white shadow-sm";
+                default: return "bg-[#374151] text-white";
+              }
+            };
+
             return (
               <button
                 key={tab.key}
@@ -845,19 +876,11 @@ export default function AdminVendorsPage() {
                   setStatusFilter(tab.key);
                   setPage(1);
                 }}
-                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
-                  isSelected
-                    ? "bg-[#EEF2F6] shadow-neu-raised-sm text-[#2563EB] font-bold"
-                    : "text-[#64748B] hover:text-[#1E293B] hover:shadow-neu-raised-sm"
-                }`}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition cursor-pointer whitespace-nowrap ${getActiveClasses(tab.key)}`}
               >
                 <span>{tab.label}</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
-                    isSelected
-                      ? "bg-[#374151] text-white"
-                      : "bg-[#EEF2F6] shadow-neu-flat border border-white/80 text-[#64748B]"
-                  }`}
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono transition-colors ${getBadgeClasses(tab.key)}`}
                 >
                   {tab.count}
                 </span>

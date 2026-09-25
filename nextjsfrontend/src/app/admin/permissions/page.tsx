@@ -70,16 +70,25 @@ function AdminPermissionsContent() {
   const [selectedRoleId, setSelectedRoleId] = useState<string>("operations_manager");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(employeeIdQuery || "");
 
+export default function AdminPermissionsPage() {
+  const [permissions, setPermissions] = useState<PermissionItem[]>([]);
+  const [rolePermissions, setRolePermissions] = useState<Record<string, string[]>>({
+    admin: [],
+    operations_manager: [],
+    operations_executive: [],
+    customer: [],
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Target data states
-  const [currentEmployee, setCurrentEmployee] = useState<any | null>(null);
-  const [roleDefaultPermissions, setRoleDefaultPermissions] = useState<string[]>([]);
-  const [grantedOverrides, setGrantedOverrides] = useState<string[]>([]);
-  const [revokedOverrides, setRevokedOverrides] = useState<string[]>([]);
+  const roles = [
+    { id: "admin", label: "Admin", badge: "Supervisory" },
+    { id: "operations_manager", label: "Ops Manager", badge: "Management" },
+    { id: "operations_executive", label: "Ops Executive", badge: "Execution" },
+    { id: "customer", label: "Customer", badge: "Client" },
+  ];
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isAuthorized, setIsAuthorized] = useState<boolean>(true);
@@ -456,19 +465,74 @@ function AdminPermissionsContent() {
                   </select>
                 </div>
               ) : (
-                <div className="w-full">
-                  <select
-                    value={selectedEmployeeId}
-                    onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition cursor-pointer"
-                  >
-                    {employees.map((emp) => (
-                      <option key={emp._id} value={emp._id}>
-                        {emp.displayName || emp.username} — {(emp.adminRole || "admin").replace(/_/g, " ")} ({emp.phone})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                modules.map((moduleName) => {
+                  const modulePerms = permissions.filter((p) => p.module === moduleName);
+                  return (
+                    <Fragment key={moduleName}>
+                      {/* Module header row */}
+                      <tr className="bg-[#EEF2F6] border-y border-[#D9E2EC]/70">
+                        <td
+                          colSpan={6}
+                          className="py-2 px-4 text-[11px] font-bold uppercase tracking-wider text-[#1E293B]"
+                        >
+                          {moduleName}
+                        </td>
+                      </tr>
+
+                      {modulePerms.map((perm) => (
+                        <tr key={perm.id} className="hover:bg-[#EEF2F6]/70 transition-colors">
+                          <td className="py-2.5 px-4">
+                            <div className="font-semibold text-[#1E293B]">{perm.name}</div>
+                            <code className="text-[10px] text-[#64748B] font-mono">{perm.id}</code>
+                          </td>
+                          <td className="py-2.5 px-4 text-[#64748B] hidden md:table-cell text-[11px]">
+                            {perm.description}
+                          </td>
+
+                          {roles.map((role) => {
+                            const isGranted = (rolePermissions[role.id] || []).includes(perm.id);
+                            const isUpdating = updatingKey === `${role.id}:${perm.id}`;
+                            const isLocked = role.id === "admin" && perm.id === "permissions:manage";
+
+                            return (
+                              <td key={role.id} className="py-2.5 px-3 text-center align-middle">
+                                {isLocked ? (
+                                  <span
+                                    className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200/80 cursor-not-allowed"
+                                    title="Root administrator privilege (Locked)"
+                                  >
+                                    <Lock size={10} className="text-[#14B8A6]" />
+                                    Allowed
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleTogglePermission(role.id, perm.id, isGranted)}
+                                    disabled={isUpdating}
+                                    className={`inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium transition cursor-pointer border ${
+                                      isGranted
+                                        ? "bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100 font-semibold"
+                                        : "bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100 font-semibold"
+                                    } ${isUpdating ? "opacity-50 pointer-events-none" : ""}`}
+                                    title={`Click to ${isGranted ? "revoke" : "grant"} permission for ${role.label}`}
+                                  >
+                                    {isUpdating ? (
+                                      <RefreshCw size={10} className={`animate-spin ${isGranted ? "text-emerald-600" : "text-rose-600"}`} />
+                                    ) : isGranted ? (
+                                      <Check size={11} className="text-emerald-600" />
+                                    ) : (
+                                      <X size={11} className="text-rose-600" />
+                                    )}
+                                    <span>{isGranted ? "Allowed" : "Restricted"}</span>
+                                  </button>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </Fragment>
+                  );
+                })
               )}
             </div>
           </div>

@@ -311,24 +311,24 @@ export default function ServiceAreasPage() {
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => handleToggleStatus(area)}
-                          className={`px-2 py-1 rounded text-[10px] font-medium transition cursor-pointer border ${
+                          className={`px-2 py-1.5 rounded-md text-[10px] font-medium transition cursor-pointer border hover:-translate-y-0.5 hover:shadow-sm ${
                             area.active
-                              ? "bg-[#EEF2F6] hover:bg-[#EEF2F6] text-slate-600 border-[#D9E2EC]/70"
-                              : "bg-teal-50 hover:bg-emerald-100 text-teal-700 border-emerald-200"
+                              ? "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
+                              : "bg-teal-50 hover:bg-teal-100 text-teal-700 border-teal-200"
                           }`}
                         >
                           {area.active ? "Deactivate" : "Activate"}
                         </button>
                         <button
                           onClick={() => openEditModal(area)}
-                          className="p-1 text-slate-500 hover:text-[#2563EB] hover:bg-blue-50/80 rounded transition cursor-pointer"
+                          className="p-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 hover:-translate-y-0.5 hover:shadow-sm rounded-md transition cursor-pointer"
                           title="Edit Area"
                         >
                           <Edit2 size={13} />
                         </button>
                         <button
                           onClick={() => handleDeleteArea(area.id, area.name)}
-                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                          className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 hover:-translate-y-0.5 hover:shadow-sm rounded-md transition cursor-pointer"
                           title="Delete Area"
                         >
                           <Trash2 size={13} />

@@ -491,31 +491,26 @@ export default function AdminVendorRequestsPage() {
       {/* MODAL: STRUCTURED KYC DOCUMENT INSPECTION DOSSIER (Replaces Raw JSON)      */}
       {/* ========================================================================= */}
       {inspectApp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/50 backdrop-blur-2xs">
-          <div className="w-full max-w-3xl bg-[#EEF2F6] rounded-3xl shadow-neu-flat border border-white/80 overflow-hidden shadow-2xl flex flex-col max-h-[90vh] animate-scaleUp">
-            {/* Header */}
-            <div className="px-6 py-4 bg-[#EEF2F6] border-b border-[#D9E2EC]/70 flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-bold text-slate-900">{inspectApp.businessName}</h3>
-                  <StatusBadge status={inspectApp.status} />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-2xl bg-[#EEF2F6] rounded-2xl shadow-neu-flat border border-white/80 overflow-hidden shadow-lg flex flex-col max-h-[90vh]">
+            <div className="px-5 py-3.5 border-b border-[#D9E2EC]/70 flex items-center justify-between bg-[#EEF2F6] shrink-0">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setInspectApp(null)}
+                  className="p-1.5 text-slate-500 hover:text-slate-700 bg-white/50 hover:bg-white rounded-lg shadow-sm border border-[#D9E2EC]/70 transition cursor-pointer"
+                  title="Go Back"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                </button>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">{inspectApp.businessName}</h3>
+                  <p className="text-[11px] text-slate-500">Application Review</p>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Full Business & Representative KYC Verification Dossier
-                </p>
               </div>
-              <button
-                onClick={() => setInspectApp(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-xl transition cursor-pointer"
-              >
-                <X size={18} />
-              </button>
             </div>
 
-            {/* Scrollable Dossier Body */}
-            <div className="p-6 overflow-y-auto space-y-6 text-xs">
-              {/* Company Info Banner */}
-              <div className="p-4 rounded-2xl bg-white/70 border border-[#D9E2EC]/70 grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="p-5 space-y-4 text-xs overflow-y-auto min-h-0">
+              <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-200">
                 <div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase">Contact Phone</span>
                   <p className="font-mono font-semibold text-slate-900">{inspectApp.contactPhone}</p>
@@ -544,129 +539,69 @@ export default function AdminVendorRequestsPage() {
                   </span>
                 </div>
 
-                <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.section === "COMPANY" || d.type === "GST_CERTIFICATE" || d.type === "BUSINESS_PAN").map((std) => {
-                    const submitted = (inspectApp.verificationDetails?.documents || []).find(
-                      (d) => d.type === std.type
-                    );
-                    const status = submitted?.status || "NOT_SUBMITTED";
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-slate-500 block mb-1">Requested Service Areas</span>
+                  <div className="flex flex-wrap gap-1">
+                    {inspectApp.serviceAreas?.map((a, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-white border border-[#D9E2EC] shadow-sm rounded text-slate-700 font-medium">
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                </div>
 
-                    return (
-                      <AdminDocReviewRow
-                        key={std.type}
-                        title={std.title}
-                        type={std.type}
-                        description={std.description}
-                        submitted={submitted}
-                        status={status}
-                        onView={() =>
-                          setViewingFile({
-                            title: std.title,
-                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectApp._id}/documents/${std.type}/view`,
-                            fileName: submitted?.fileName,
-                            fileSize: submitted?.fileSize,
-                            docType: std.type,
-                            vendorId: inspectApp._id,
-                            vendorName: inspectApp.businessName,
-                            status,
-                            feedback: submitted?.feedback,
-                            idType: submitted?.idType,
-                            maskedIdNumber: submitted?.maskedIdNumber,
-                          })
-                        }
-                        onApprove={() => handleDocumentDecision(inspectApp._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
-                        onRequestChanges={() => handleDocumentDecision(inspectApp._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
-                        onReject={() => handleDocumentDecision(inspectApp._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
-                        onFeedbackNotes={() => {
-                          setDocReviewReason(submitted?.feedback || "");
-                          setDocReviewPrompt({
-                            vendorId: inspectApp._id,
-                            docType: std.type,
-                            title: std.title,
-                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
-                          });
-                        }}
-                      />
-                    );
-                  })}
+                <div>
+                  <span className="text-slate-500 block mb-1">Offered Moving Services</span>
+                  <div className="flex flex-wrap gap-1">
+                    {inspectApp.servicesOffered?.map((s, i) => (
+                      <span key={i} className="px-2 py-0.5 bg-white border border-[#D9E2EC] shadow-sm rounded capitalize font-medium text-slate-700">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
-              {/* SECTION 2: OWNER / REPRESENTATIVE VERIFICATION (2 CORE DOCUMENTS) */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
-                  <div className="flex items-center gap-2">
-                    <UserCheck size={16} className="text-[#14B8A6]" />
-                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                      Section 2 — Owner / Authorized Representative Verification
-                    </h4>
+              {inspectApp.verificationDetails && (
+                <div className="pt-2">
+                  <span className="font-semibold text-slate-800 block mb-2 text-sm border-b border-[#D9E2EC]/70 pb-1">Submitted Verification Documents</span>
+                  <div className="space-y-3 mt-3">
+                    {Array.isArray(inspectApp.verificationDetails) ? (
+                      inspectApp.verificationDetails.map((doc, idx) => (
+                        <div key={idx} className="p-3 bg-white rounded-xl shadow-sm border border-[#D9E2EC] flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-slate-900 truncate text-sm">{doc.name || doc.type}</p>
+                            <p className="text-slate-500 mt-0.5 text-[11px] font-mono truncate">{doc.fileName || "Document"}</p>
+                            {doc.notes && <p className="text-slate-600 mt-1.5 italic text-[11px]">&quot;{doc.notes}&quot;</p>}
+                            <div className="flex items-center gap-2 mt-2">
+                              {doc.status && (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${doc.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                  {doc.status}
+                                </span>
+                              )}
+                              {doc.fileSize && <span className="text-slate-400 text-[10px]">{doc.fileSize}</span>}
+                            </div>
+                          </div>
+                          {doc.fileUrl && (
+                            <a 
+                              href={doc.fileUrl} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium rounded-lg transition shrink-0 border border-blue-200 shadow-sm flex items-center gap-1.5"
+                            >
+                              <Eye size={14} />
+                              <span>View</span>
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <pre className="text-[11px] font-mono text-slate-600 bg-white p-3 rounded-xl border border-[#D9E2EC] overflow-x-auto">
+                        {JSON.stringify(inspectApp.verificationDetails, null, 2)}
+                      </pre>
+                    )}
                   </div>
-                  <span className="text-[10px] font-bold text-[#14B8A6] bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
-                    2 Required Items
-                  </span>
-                </div>
-
-                <div className="space-y-2.5">
-                  {STANDARD_KYC_DOCS.filter((d) => d.section === "REPRESENTATIVE" || d.type === "REPRESENTATIVE_ID_PROOF" || d.type === "REPRESENTATIVE_PHOTO").map((std) => {
-                    const submitted = (inspectApp.verificationDetails?.documents || []).find(
-                      (d) => d.type === std.type
-                    );
-                    const status = submitted?.status || "NOT_SUBMITTED";
-
-                    return (
-                      <AdminDocReviewRow
-                        key={std.type}
-                        title={std.title}
-                        type={std.type}
-                        description={std.description}
-                        submitted={submitted}
-                        status={status}
-                        isPhoto={std.type === "REPRESENTATIVE_PHOTO"}
-                        onView={() =>
-                          setViewingFile({
-                            title: std.title,
-                            fileUrl: submitted?.fileUrl || `/api/v1/admin/vendors/${inspectApp._id}/documents/${std.type}/view`,
-                            fileName: submitted?.fileName,
-                            fileSize: submitted?.fileSize,
-                            docType: std.type,
-                            vendorId: inspectApp._id,
-                            vendorName: inspectApp.businessName,
-                            status,
-                            feedback: submitted?.feedback,
-                            idType: submitted?.idType,
-                            maskedIdNumber: submitted?.maskedIdNumber,
-                          })
-                        }
-                        onApprove={() => handleDocumentDecision(inspectApp._id, std.type, "APPROVED", submitted?.feedback || "Approved and verified by administrator.")}
-                        onRequestChanges={() => handleDocumentDecision(inspectApp._id, std.type, "CHANGES_REQUESTED", submitted?.feedback || "Revision requested: please upload an updated and clear copy.")}
-                        onReject={() => handleDocumentDecision(inspectApp._id, std.type, "REJECTED", submitted?.feedback || "Document rejected by administrator.")}
-                        onFeedbackNotes={() => {
-                          setDocReviewReason(submitted?.feedback || "");
-                          setDocReviewPrompt({
-                            vendorId: inspectApp._id,
-                            docType: std.type,
-                            title: std.title,
-                            decision: status === "REJECTED" ? "REJECTED" : "CHANGES_REQUESTED",
-                          });
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* SECTION 3: OPERATIONAL COMPLIANCE (OPTIONAL / SERVICE-SPECIFIC) */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-[#D9E2EC]/70 pb-2">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck size={16} className="text-emerald-600" />
-                    <h4 className="font-bold text-xs uppercase tracking-wide text-slate-800">
-                      Section 3 — Operational Compliance (Optional / Service-Specific)
-                    </h4>
-                  </div>
-                  <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                    Does not block core approval
-                  </span>
                 </div>
 
                 <div className="space-y-2.5">
@@ -718,25 +653,24 @@ export default function AdminVendorRequestsPage() {
               </div>
             </div>
 
-            {/* Footer */}
-            <div className="px-6 py-3.5 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex items-center justify-between">
+            <div className="px-5 py-3.5 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex items-center justify-between shrink-0">
               <button
                 onClick={() => setInspectApp(null)}
-                className="neu-btn px-4 py-2 text-slate-700 rounded-xl transition cursor-pointer text-xs font-semibold"
+                className="px-4 py-2 bg-white text-slate-700 hover:bg-slate-50 font-medium rounded-lg transition cursor-pointer shadow-sm border border-slate-200"
               >
                 Close
               </button>
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => openDecisionModal(inspectApp, "CHANGES_REQUESTED")}
-                  className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 rounded-xl text-xs font-bold transition cursor-pointer"
+                  onClick={() => openDecisionModal(inspectApp, "APPROVED")}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition cursor-pointer shadow-sm"
                 >
                   Request Revisions
                 </button>
                 <button
-                  onClick={() => openDecisionModal(inspectApp, "APPROVED")}
-                  className="neu-btn-primary px-4 py-2 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-neu-raised-sm"
+                  onClick={() => openDecisionModal(inspectApp, "REJECTED")}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-medium transition cursor-pointer shadow-sm"
                 >
                   Approve All Documents
                 </button>
