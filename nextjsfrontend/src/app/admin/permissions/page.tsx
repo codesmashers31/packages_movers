@@ -1,27 +1,74 @@
 "use client";
 
-import { useEffect, useState, useCallback, Fragment } from "react";
+import { useState, useEffect, useMemo, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
 import PageHeader from "../components/PageHeader";
 import {
-  KeyRound,
+  ADMIN_SIDEBAR_MODULES,
+  isAdminActionGranted,
+  type AdminSidebarModuleDef,
+  type AdminPermissionActionDef,
+} from "@/lib/adminPermissionsDef";
+import ModuleActionPermissionSelector from "@/components/permissions/ModuleActionPermissionSelector";
+import {
   Shield,
+  ShieldCheck,
+  Users,
   Check,
-  X,
+  X as XIcon,
   RefreshCw,
   AlertCircle,
   CheckCircle2,
-  Lock,
+  Store,
+  UserCheck,
+  FileCheck2,
+  Package,
+  MapPin,
+  CalendarCheck,
+  AlertTriangle,
+  BarChart3,
+  FileClock,
+  Settings,
+  ChevronRight,
   Info,
+  RotateCcw,
+  Save,
+  ArrowLeft,
+  ShieldAlert,
+  Building2,
+  Search,
+  Filter,
 } from "lucide-react";
 
-interface PermissionItem {
-  id: string;
-  name: string;
-  module: string;
-  description: string;
-}
+const ADMIN_ICON_MAP: Record<string, any> = {
+  Users,
+  Store,
+  UserCheck,
+  FileCheck2,
+  Package,
+  MapPin,
+  CalendarCheck,
+  AlertTriangle,
+  Shield,
+  ShieldCheck,
+  BarChart3,
+  FileClock,
+  Settings,
+};
+
+function AdminPermissionsContent() {
+  const searchParams = useSearchParams();
+  const employeeIdQuery = searchParams.get("employeeId");
+
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [roles, setRoles] = useState<any[]>([]);
+  const [selectedTargetType, setSelectedTargetType] = useState<"role" | "employee">(
+    employeeIdQuery ? "employee" : "role"
+  );
+  const [selectedRoleId, setSelectedRoleId] = useState<string>("operations_manager");
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(employeeIdQuery || "");
 
 export default function AdminPermissionsPage() {
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
@@ -32,9 +79,9 @@ export default function AdminPermissionsPage() {
     customer: [],
   });
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [updatingKey, setUpdatingKey] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const roles = [
     { id: "admin", label: "Admin", badge: "Supervisory" },
@@ -43,161 +90,380 @@ export default function AdminPermissionsPage() {
     { id: "customer", label: "Customer", badge: "Client" },
   ];
 
-  const fetchPermissions = useCallback(async () => {
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isAuthorized, setIsAuthorized] = useState<boolean>(true);
+
+  // Load standard admin roles & employee roster
+  const loadInitialData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await fetchApi<{
-        permissionsList: PermissionItem[];
-        rolePermissions: Record<string, string[]>;
-      }>("/admin/permissions");
 
-      setPermissions(data.permissionsList || []);
-      setRolePermissions(data.rolePermissions || {});
+      // Verify governance permission
+      const meRes = await fetchApi<{ user: any }>("/auth/me");
+      const user = meRes?.user;
+      setCurrentUser(user);
+      const isSuperAdmin =
+        user?.phone === "+919876543210" || (user?.role === "admin" && user?.adminRole === "super_admin");
+      const hasPerm =
+        Array.isArray(user?.permissions) &&
+        (user.permissions.includes("permissions:manage") || user.permissions.includes("*"));
+
+      if (!isSuperAdmin && !hasPerm) {
+        setIsAuthorized(false);
+        setLoading(false);
+        return;
+      }
+
+      const [empRes, rolesRes] = await Promise.all([
+        fetchApi<{ employees: any[] }>("/admin/employees?limit=100"),
+        fetchApi<{ roles: any[] }>("/admin/admin-roles"),
+      ]);
+
+      const empList = empRes.employees || [];
+      const roleList = rolesRes.roles || [];
+
+      // Deduplicate roles and employees by ID to guarantee unique React keys
+      const uniqueRoles = Array.from(new Map(roleList.map((r: any) => [r.id, r])).values());
+      const uniqueEmployees = Array.from(new Map(empList.map((e: any) => [e._id, e])).values());
+
+      setEmployees(uniqueEmployees);
+      setRoles(uniqueRoles);
+
+      if (employeeIdQuery) {
+        setSelectedTargetType("employee");
+        setSelectedEmployeeId(employeeIdQuery);
+      } else if (uniqueEmployees.length > 0 && !selectedEmployeeId) {
+        setSelectedEmployeeId(uniqueEmployees[0]._id);
+      }
+      if (uniqueRoles.length > 0 && !selectedRoleId) {
+        setSelectedRoleId(uniqueRoles[0].id || "operations_manager");
+      }
     } catch (err: any) {
-      setError(err.message || "Failed to load permissions from MongoDB");
+      setError(err.message || "Failed to load roles and platform staff roster");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedEmployeeId, selectedRoleId, employeeIdQuery]);
 
   useEffect(() => {
-    fetchPermissions();
-  }, [fetchPermissions]);
+    loadInitialData();
+  }, [loadInitialData]);
 
-  const handleTogglePermission = async (role: string, permissionKey: string, currentlyGranted: boolean) => {
-    // Prevent admin lockout
-    if (role === "admin" && permissionKey === "permissions:manage" && currentlyGranted) {
-      alert("Administrator role must retain permission management authority to prevent lockout.");
+  useEffect(() => {
+    if (employeeIdQuery) {
+      setSelectedTargetType("employee");
+      setSelectedEmployeeId(employeeIdQuery);
+    }
+  }, [employeeIdQuery]);
+
+  // Sync state whenever selected role changes
+  useEffect(() => {
+    if (selectedTargetType === "role" && selectedRoleId && roles.length > 0) {
+      const matchedRole = roles.find((r) => r.id === selectedRoleId);
+      setRoleDefaultPermissions(matchedRole?.permissions || []);
+      setGrantedOverrides([]);
+      setRevokedOverrides([]);
+      setCurrentEmployee(null);
+    }
+  }, [selectedTargetType, selectedRoleId, roles]);
+
+  // Sync state whenever selected employee changes
+  useEffect(() => {
+    if (selectedTargetType === "employee" && selectedEmployeeId) {
+      let isSubscribed = true;
+      const loadEmployeeDetail = async () => {
+        try {
+          setLoading(true);
+          setError(null);
+          const data = await fetchApi<{
+            employee: any;
+            roleDef: any;
+            effectivePermissions: string[];
+            permissionOverrides: { granted: string[]; revoked: string[] };
+          }>(`/admin/employees/${selectedEmployeeId}`);
+
+          if (!isSubscribed) return;
+
+          setCurrentEmployee(data.employee);
+
+          const matchedRole = roles.find((r) => r.id === data.employee.adminRole) || data.roleDef;
+          setRoleDefaultPermissions(matchedRole?.permissions || []);
+
+          const overrides = data.permissionOverrides || data.employee.permissionOverrides || { granted: [], revoked: [] };
+          setGrantedOverrides(overrides.granted || []);
+          setRevokedOverrides(overrides.revoked || []);
+        } catch (err: any) {
+          if (isSubscribed) setError(err.message || "Failed to fetch employee permissions");
+        } finally {
+          if (isSubscribed) setLoading(false);
+        }
+      };
+
+      loadEmployeeDetail();
+      return () => {
+        isSubscribed = false;
+      };
+    }
+  }, [selectedTargetType, selectedEmployeeId, roles]);
+
+  // Effective permissions calculation: (Role Defaults + Granted) - Revoked
+  const effectivePermissions = useMemo(() => {
+    if (selectedTargetType === "role") {
+      return roleDefaultPermissions;
+    }
+    const combined = Array.from(new Set([...roleDefaultPermissions, ...grantedOverrides]));
+    return combined.filter((p) => !revokedOverrides.includes(p));
+  }, [selectedTargetType, roleDefaultPermissions, grantedOverrides, revokedOverrides]);
+
+  const isActionActive = (action: AdminPermissionActionDef): boolean => {
+    return isAdminActionGranted(effectivePermissions, action);
+  };
+
+  const getActionState = (action: AdminPermissionActionDef) => {
+    const isDefault = isAdminActionGranted(roleDefaultPermissions, action);
+    const isGrantedOverride = grantedOverrides.includes(action.key);
+    const isRevokedOverride = revokedOverrides.includes(action.key);
+
+    if (selectedTargetType === "employee") {
+      if (isRevokedOverride) return "revoked";
+      if (isGrantedOverride) return "granted_override";
+      if (isDefault) return "role_default";
+      return "none";
+    }
+
+    return isDefault ? "role_default" : "none";
+  };
+
+  const handleToggleAction = (action: AdminPermissionActionDef) => {
+    setError(null);
+    setSuccessMessage(null);
+
+    const permKey = action.key;
+    const isCurrentlyActive = isActionActive(action);
+    const isGrantedByRole = isAdminActionGranted(roleDefaultPermissions, action);
+
+    if (selectedTargetType === "role") {
+      setRoleDefaultPermissions((prev) => {
+        if (isCurrentlyActive) {
+          return prev.filter((p) => p !== permKey && (!action.aliases || !action.aliases.includes(p)));
+        } else {
+          return [...prev, permKey];
+        }
+      });
       return;
     }
 
-    const stateKey = `${role}:${permissionKey}`;
-    try {
-      setUpdatingKey(stateKey);
-      setError(null);
-
-      // Optimistic update
-      setRolePermissions((prev) => {
-        const currentList = prev[role] || [];
-        const nextList = currentlyGranted
-          ? currentList.filter((p) => p !== permissionKey)
-          : [...currentList, permissionKey];
-        return { ...prev, [role]: nextList };
-      });
-
-      const resData = await fetchApi<{
-        success: boolean;
-        rolePermissions: Record<string, string[]>;
-      }>("/admin/permissions", {
-        method: "PATCH",
-        body: JSON.stringify({
-          role,
-          permissionKey,
-          granted: !currentlyGranted,
-        }),
-      });
-
-      if (resData.rolePermissions) {
-        setRolePermissions(resData.rolePermissions);
+    if (isCurrentlyActive) {
+      if (isGrantedByRole) {
+        setRevokedOverrides((prev) => Array.from(new Set([...prev, permKey])));
+        setGrantedOverrides((prev) =>
+          prev.filter((p) => p !== permKey && (!action.aliases || !action.aliases.includes(p)))
+        );
+      } else {
+        setGrantedOverrides((prev) =>
+          prev.filter((p) => p !== permKey && (!action.aliases || !action.aliases.includes(p)))
+        );
       }
-
-      setToastMessage(
-        `${!currentlyGranted ? "Granted" : "Revoked"} '${permissionKey}' for ${role.toUpperCase()}`
-      );
-      setTimeout(() => setToastMessage(null), 3500);
-    } catch (err: any) {
-      setError(err.message || "Action failed");
-      // Revert from server
-      fetchPermissions();
-    } finally {
-      setUpdatingKey(null);
+    } else {
+      if (isGrantedByRole) {
+        setRevokedOverrides((prev) =>
+          prev.filter((p) => p !== permKey && (!action.aliases || !action.aliases.includes(p)))
+        );
+      } else {
+        setGrantedOverrides((prev) => Array.from(new Set([...prev, permKey])));
+        setRevokedOverrides((prev) =>
+          prev.filter((p) => p !== permKey && (!action.aliases || !action.aliases.includes(p)))
+        );
+      }
     }
   };
 
-  // Group by module
-  const modules = Array.from(new Set(permissions.map((p) => p.module)));
+  const handleResetOverrides = () => {
+    setGrantedOverrides([]);
+    setRevokedOverrides([]);
+    setSuccessMessage("Overrides cleared. Permissions will now mirror base role defaults.");
+  };
 
-  return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Role & Permission Matrix"
-        description="Live authorization matrix enforced by backend API middleware. Toggling values immediately updates MongoDB."
-      >
-        <Link
-          href="/admin/roles"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#EEF2F6] border border-[#D9E2EC]/70 hover:bg-[#EEF2F6] text-slate-700 rounded-md text-xs font-medium shadow-neu-flat-sm transition"
-        >
-          <Shield size={14} className="text-slate-500" />
-          <span>Role Demographics</span>
-        </Link>
-        <button
-          onClick={fetchPermissions}
-          className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-[#EEF2F6] rounded-md transition cursor-pointer"
-          title="Reload Permissions"
-        >
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-        </button>
-      </PageHeader>
+  const handleSave = async () => {
+    try {
+      setSaving(true);
+      setError(null);
+      setSuccessMessage(null);
 
-      {/* Informational Guidance Banner */}
-      <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg flex items-start gap-2.5 text-xs text-amber-900">
-        <Info size={16} className="text-amber-600 shrink-0 mt-0.5" />
-        <div className="space-y-0.5">
-          <span className="font-semibold">Backend Middleware Enforcement Active</span>
-          <p className="text-[11px] text-amber-800/90">
-            When a permission is toggled to <strong>Restricted</strong>, any API call from that role attempting that action is rejected with <code className="bg-amber-100/80 px-1 py-0.5 rounded text-amber-900 font-mono text-[10px]">HTTP 403 Forbidden</code>.
+      if (selectedTargetType === "employee") {
+        if (!selectedEmployeeId) return;
+
+        await fetchApi(`/admin/employees/${selectedEmployeeId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            permissionOverrides: {
+              granted: grantedOverrides,
+              revoked: revokedOverrides,
+            },
+          }),
+        });
+
+        setSuccessMessage(`Permissions successfully saved for ${currentEmployee?.displayName || "staff member"}.`);
+      } else {
+        await fetchApi(`/admin/roles/${selectedRoleId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            permissions: roleDefaultPermissions,
+          }),
+        });
+
+        setSuccessMessage(`Default capabilities updated for role "${selectedRoleId.replace(/_/g, " ")}".`);
+      }
+
+      // Refresh /auth/me to sync live state
+      try {
+        const meRes = await fetchApi<{ user: any }>("/auth/me");
+        if (meRes?.user) {
+          setCurrentUser(meRes.user);
+          try {
+            localStorage.setItem("auth_user", JSON.stringify(meRes.user));
+          } catch (_) {}
+        }
+      } catch (_) {}
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("admin-permissions-updated"));
+        window.dispatchEvent(new Event("permissions-updated"));
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to save permissions");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const platformCompanyName =
+    currentEmployee?.companyName || "Package Movers Platform Administration";
+
+  if (!isAuthorized) {
+    return (
+      <div className="p-8 sm:p-12 max-w-md mx-auto text-center space-y-4 bg-white rounded-3xl shadow-sm border border-slate-200/80 my-12 animate-scaleUp font-sans">
+        <div className="h-12 w-12 rounded-2xl bg-amber-50 text-amber-600 mx-auto flex items-center justify-center border border-amber-200">
+          <ShieldAlert size={24} />
+        </div>
+        <div>
+          <h3 className="text-base font-bold text-slate-900">Access Restricted</h3>
+          <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+            Platform Permissions & Role Access Governance is strictly reserved for Platform Super Administrators and Authorized Governance Officers.
           </p>
         </div>
+        <div className="pt-2">
+          <Link
+            href="/admin/my-permissions"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition"
+          >
+            <ShieldCheck size={14} />
+            <span>View My Capabilities</span>
+          </Link>
+        </div>
       </div>
+    );
+  }
 
-      {/* Notifications */}
+  return (
+    <div className="space-y-6 font-sans text-slate-900 pb-12">
+      <PageHeader
+        title="Platform Permissions & Access Governance"
+        description="Configure platform administrative role defaults and individual officer capability overrides mapped directly to platform sidebar modules."
+      >
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin/my-permissions"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer"
+          >
+            <ShieldCheck size={14} className="text-blue-600" />
+            <span>My Capabilities</span>
+          </Link>
+
+          <button
+            onClick={loadInitialData}
+            disabled={loading || saving}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200/80 shadow-2xs transition cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+            <span>Refresh</span>
+          </button>
+        </div>
+      </PageHeader>
+
       {error && (
-        <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center justify-between gap-3 text-rose-700 text-xs">
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center gap-3 text-rose-700 text-xs shadow-2xs">
+          <AlertCircle size={18} className="shrink-0 text-rose-600" />
+          <span className="font-medium">{error}</span>
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between text-emerald-800 text-xs shadow-2xs animate-fade-in">
           <div className="flex items-center gap-2.5">
-            <AlertCircle size={16} className="shrink-0 text-rose-600" />
-            <span>{error}</span>
+            <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+            <span className="font-semibold">{successMessage}</span>
           </div>
           <button
-            onClick={() => fetchPermissions()}
-            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-medium transition cursor-pointer shrink-0"
+            onClick={() => setSuccessMessage(null)}
+            className="text-emerald-700 hover:text-emerald-900 font-bold px-2 py-0.5 cursor-pointer"
           >
-            Retry
+            ×
           </button>
         </div>
       )}
 
-      {toastMessage && (
-        <div className="p-3 bg-teal-50 border border-emerald-200 rounded-lg flex items-center gap-2.5 text-teal-700 text-xs shadow-neu-flat-sm">
-          <CheckCircle2 size={16} className="shrink-0 text-[#14B8A6]" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
+      {/* Distinction Top Bar: Base Role Permissions vs. Individual Employee Permissions */}
+      <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-2xs">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="inline-flex p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setSelectedTargetType("role")}
+                className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  selectedTargetType === "role"
+                    ? "bg-white text-slate-900 shadow-2xs ring-1 ring-slate-200"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Shield size={14} className="text-blue-600" />
+                  <span>1. Base Role Template</span>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTargetType("employee")}
+                className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  selectedTargetType === "employee"
+                    ? "bg-white text-slate-900 shadow-2xs ring-1 ring-slate-200"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Users size={14} className="text-emerald-600" />
+                  <span>2. Individual Officer Overrides</span>
+                </div>
+              </button>
+            </div>
 
-      {/* Matrix Table */}
-      <div className="bg-[#EEF2F6] rounded-xl border border-[#D9E2EC]/70 shadow-neu-inset-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-[#EEF2F6] border-b border-[#D9E2EC]/70 text-[#64748B] text-[11px] uppercase tracking-wider">
-                <th className="py-3 px-4 font-semibold w-72">Operational Capability</th>
-                <th className="py-3 px-4 font-semibold hidden md:table-cell">Security Scope & Boundary</th>
-                {roles.map((r) => (
-                  <th key={r.id} className="py-3 px-3 font-semibold text-center w-28">
-                    <div className="text-[#1E293B]">{r.label}</div>
-                    <span className="text-[9px] font-normal text-[#64748B] block tracking-normal normal-case">{r.badge}</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#D9E2EC]/70">
-              {loading && permissions.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-16 text-center text-[#64748B]">
-                    <RefreshCw size={22} className="animate-spin mx-auto mb-2 text-[#2563EB]" />
-                    <span className="text-xs font-medium">Loading permission matrix from MongoDB...</span>
-                  </td>
-                </tr>
+            <div className="flex items-center gap-2 min-w-[290px]">
+              {selectedTargetType === "role" ? (
+                <div className="w-full">
+                  <select
+                    value={selectedRoleId}
+                    onChange={(e) => setSelectedRoleId(e.target.value)}
+                    className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition cursor-pointer"
+                  >
+                    {roles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} ({r.permissions?.length || 0} default capabilities)
+                      </option>
+                    ))}
+                  </select>
+                </div>
               ) : (
                 modules.map((moduleName) => {
                   const modulePerms = permissions.filter((p) => p.module === moduleName);
@@ -268,15 +534,202 @@ export default function AdminPermissionsPage() {
                   );
                 })
               )}
-            </tbody>
-          </table>
-        </div>
+            </div>
+          </div>
 
-        <div className="px-5 py-3 bg-[#EEF2F6] border-t border-[#D9E2EC]/70 flex items-center justify-between text-[11px] text-[#64748B]">
-          <span>Total Operational Permissions: <strong className="text-[#1E293B]">{permissions.length}</strong></span>
-          <span>Security Model: Dynamic Role-Based Access Control (RBAC)</span>
+          <div className="flex items-center gap-2.5">
+            {selectedTargetType === "employee" && (grantedOverrides.length > 0 || revokedOverrides.length > 0) && (
+              <button
+                type="button"
+                onClick={handleResetOverrides}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+              >
+                <RotateCcw size={13} />
+                <span>Reset to Role Defaults</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow-xs hover:shadow transition cursor-pointer disabled:opacity-50"
+            >
+              {saving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+              <span>Save Permissions</span>
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* INDIVIDUAL OFFICER MANAGEMENT CARD (Explicitly displaying Employee Name, Employee Role, Company, Effective Permission Summary) */}
+      {selectedTargetType === "employee" && currentEmployee && (
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-2xs space-y-5">
+          <div className="flex items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+              <Link href="/admin/employees" className="hover:text-[#2563EB] transition flex items-center gap-1">
+                <Users size={13} />
+                <span>Platform Staff</span>
+              </Link>
+              <span>/</span>
+              <Link
+                href={`/admin/employees/${currentEmployee._id}`}
+                className="hover:text-[#2563EB] transition font-semibold text-slate-700"
+              >
+                {currentEmployee.displayName || currentEmployee.username}
+              </Link>
+              <span>/</span>
+              <span className="text-[#2563EB] font-bold">Permissions Governance</span>
+            </div>
+
+            <Link
+              href={`/admin/employees/${currentEmployee._id}`}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#2563EB] transition"
+            >
+              <ArrowLeft size={13} />
+              <span>Back to Officer Profile</span>
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Field 1: Employee Name */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-100 space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Employee Name</div>
+              <div className="text-sm font-black text-slate-900 flex items-center gap-2">
+                <div className="h-6 w-6 rounded-full bg-blue-100 text-[#2563EB] text-[10px] font-bold flex items-center justify-center shrink-0">
+                  {(currentEmployee.displayName || currentEmployee.username || "A")[0].toUpperCase()}
+                </div>
+                <span className="truncate">{currentEmployee.displayName || currentEmployee.username}</span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">{currentEmployee.phone}</div>
+            </div>
+
+            {/* Field 2: Employee Role */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-100 space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Employee Role</div>
+              <div className="text-sm font-black text-slate-900 flex items-center gap-2">
+                <Shield size={14} className="text-blue-600 shrink-0" />
+                <span className="capitalize">{(currentEmployee.adminRole || "operations_manager").replace(/_/g, " ")}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">Administrative Designation</div>
+            </div>
+
+            {/* Field 3: Company */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-100 space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Company</div>
+              <div className="text-sm font-black text-slate-900 flex items-center gap-1.5 truncate">
+                <Building2 size={14} className="text-blue-600 shrink-0" />
+                <span className="truncate">{platformCompanyName}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">Platform Headquarters</div>
+            </div>
+
+            {/* Field 4: Effective Permission Summary */}
+            <div className="p-4 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50/50 border border-blue-100 space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-blue-700">Effective Permission Summary</div>
+              <div className="text-base font-black text-blue-900">
+                {effectivePermissions.length} <span className="text-xs font-semibold text-blue-700">Active Capabilities</span>
+              </div>
+              <div className="text-[10px] text-slate-600 flex items-center gap-1.5 pt-0.5">
+                <span className="font-semibold text-slate-800">{roleDefaultPermissions.length} base</span>
+                <span>•</span>
+                <span className="font-semibold text-emerald-700">+{grantedOverrides.length} granted</span>
+                <span>•</span>
+                <span className="font-semibold text-rose-700">-{revokedOverrides.length} revoked</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs border-t border-slate-100 text-slate-500">
+            <div className="flex items-center gap-2">
+              <Info size={13} className="text-blue-500 shrink-0" />
+              <span>
+                <strong>Effective Permissions Formula:</strong> Effective = (Base Role Defaults ∪ Custom Granted) ∖ Custom Revoked
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Personal overrides adjust this platform officer without altering global role definitions.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BASE ROLE MANAGEMENT CARD */}
+      {selectedTargetType === "role" && (
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-2xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-xs text-slate-500 mb-1 font-medium">
+                <Shield size={13} className="text-blue-600" />
+                <span>Base Role Configuration Template</span>
+              </div>
+              <h3 className="text-lg font-black text-slate-900 tracking-tight capitalize">
+                Role: {selectedRoleId.replace(/_/g, " ")}
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Organization: <strong className="text-slate-900">{platformCompanyName}</strong> • Default Capabilities:{" "}
+                <strong className="text-blue-700">{roleDefaultPermissions.length} enabled</strong>
+              </p>
+            </div>
+
+            <div className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200/80 text-[11px] text-amber-800 max-w-sm">
+              <span className="font-bold">Template Impact:</span> Changes made here apply by default to all platform staff assigned the{" "}
+              <strong>{selectedRoleId.replace(/_/g, " ")}</strong> role who do not have individual overrides.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enterprise Reusable Two-Column Module Action Permission Selector */}
+      {selectedTargetType === "role" ? (
+        <ModuleActionPermissionSelector
+          modules={ADMIN_SIDEBAR_MODULES}
+          mode="role"
+          selectedPermissions={roleDefaultPermissions}
+          onTogglePermission={(key, nextChecked) => {
+            setRoleDefaultPermissions((prev) =>
+              nextChecked ? [...prev.filter((k) => k !== key), key] : prev.filter((k) => k !== key)
+            );
+          }}
+          onSelectAllModule={(moduleId) => {
+            const mod = ADMIN_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+            if (!mod) return;
+            const modKeys = mod.actions.map((a) => a.key);
+            setRoleDefaultPermissions((prev) => Array.from(new Set([...prev, ...modKeys])));
+          }}
+          onClearModule={(moduleId) => {
+            const mod = ADMIN_SIDEBAR_MODULES.find((m) => m.id === moduleId);
+            if (!mod) return;
+            const modKeys = new Set(mod.actions.map((a) => a.key));
+            setRoleDefaultPermissions((prev) => prev.filter((k) => !modKeys.has(k)));
+          }}
+        />
+      ) : (
+        <ModuleActionPermissionSelector
+          modules={ADMIN_SIDEBAR_MODULES}
+          mode="employee_override"
+          roleDefaultPermissions={roleDefaultPermissions}
+          grantedOverrides={grantedOverrides}
+          revokedOverrides={revokedOverrides}
+          onToggleAction={handleToggleAction}
+        />
+      )}
     </div>
+  );
+}
+
+export default function AdminPermissionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-2">
+          <RefreshCw size={20} className="animate-spin text-[#2563EB]" />
+          <span>Loading platform staff permissions console...</span>
+        </div>
+      }
+    >
+      <AdminPermissionsContent />
+    </Suspense>
   );
 }

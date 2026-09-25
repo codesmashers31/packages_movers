@@ -163,9 +163,8 @@ export default function AdminReportsPage() {
               </div>
               <p className="text-2xl font-bold text-teal-900 mt-2 font-mono">
                 {data.stats.totalBookings > 0
-                  ? Math.round((data.stats.completedBookings / data.stats.totalBookings) * 100)
-                  : 100}
-                %
+                  ? `${Math.round((data.stats.completedBookings / data.stats.totalBookings) * 100)}%`
+                  : "—"}
               </p>
               <p className="text-[11px] text-teal-700 mt-1">
                 {data.stats.completedBookings} of {data.stats.totalBookings} fulfilled
@@ -181,9 +180,8 @@ export default function AdminReportsPage() {
               </div>
               <p className="text-2xl font-bold text-orange-900 mt-2 font-mono">
                 {data.stats.totalVendors > 0
-                  ? Math.round((data.stats.approvedVendors / data.stats.totalVendors) * 100)
-                  : 100}
-                %
+                  ? `${Math.round((data.stats.approvedVendors / data.stats.totalVendors) * 100)}%`
+                  : "—"}
               </p>
               <p className="text-[11px] text-orange-700 mt-1">
                 {data.stats.approvedVendors} approved / {data.stats.totalVendors} total
@@ -332,7 +330,7 @@ export default function AdminReportsPage() {
               <div className="p-3 bg-[#EEF2F6] border border-[#D9E2EC]/70 rounded-md">
                 <span className="text-slate-500 font-medium">Customer Accounts</span>
                 <p className="text-xl font-bold text-slate-900 mt-1">
-                  {data.distributions?.userRoles?.customer || 2}
+                  {data.distributions?.userRoles?.customer ?? 0}
                 </p>
                 <p className="text-[11px] text-slate-400 mt-0.5">End-client shippers</p>
               </div>
@@ -348,7 +346,7 @@ export default function AdminReportsPage() {
               <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-md">
                 <span className="text-amber-950 font-medium">Worker Accounts</span>
                 <p className="text-xl font-bold text-amber-950 mt-1">
-                  {data.distributions?.userRoles?.worker || 2}
+                  {data.distributions?.userRoles?.worker ?? 0}
                 </p>
                 <p className="text-[11px] text-amber-800/80 mt-0.5">Field crew & loaders</p>
               </div>
@@ -356,7 +354,7 @@ export default function AdminReportsPage() {
               <div className="p-3 bg-[#EEF2F6] border border-[#D9E2EC]/70 rounded-md">
                 <span className="text-slate-700 font-medium">Super Administrators</span>
                 <p className="text-xl font-bold text-slate-900 mt-1">
-                  {data.distributions?.userRoles?.admin || 2}
+                  {data.distributions?.userRoles?.admin ?? 0}
                 </p>
                 <p className="text-[11px] text-slate-500 mt-0.5">Platform operators</p>
               </div>

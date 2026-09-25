@@ -1,5 +1,13 @@
+import dns from 'node:dns';
 import mongoose from 'mongoose';
 import { config } from './env.js';
+
+// Configure reliable DNS servers for MongoDB Atlas SRV resolution on Windows
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+} catch {
+  // Ignore fallback if platform restricts dns.setServers
+}
 
 let isConnecting = false;
 
@@ -8,8 +16,13 @@ export const isDBConnected = (): boolean =>
   mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2;
 
 // Wait for database connection to be fully ready before dispatching request
-export const waitForDB = async (timeoutMs: number = 6000): Promise<boolean> => {
+export const waitForDB = async (timeoutMs: number = 10000): Promise<boolean> => {
   if (mongoose.connection.readyState === 1) return true;
+  const ready = () =>
+    (mongoose.connection.readyState as number) === 1 ||
+    (mongoose.connection.readyState as number) === 2;
+
+  if (ready()) return true;
 
   if (mongoose.connection.readyState === 0 && !isConnecting) {
     connectDB().catch(() => {});
@@ -17,11 +30,11 @@ export const waitForDB = async (timeoutMs: number = 6000): Promise<boolean> => {
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if ((mongoose.connection.readyState as number) === 1) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (ready()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  return (mongoose.connection.readyState as number) === 1 || (mongoose.connection.readyState as number) === 2;
+  return ready();
 };
 
 // Event listeners for automatic diagnostic logging and recovery
